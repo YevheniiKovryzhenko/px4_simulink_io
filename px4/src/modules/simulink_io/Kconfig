@@ -1,0 +1,5 @@
+menuconfig MODULES_SIMULINK_IO
+	bool "simulink_io module"
+	default n
+	---help---
+		Enable support for the standalone auto-generated Simulink IO module.

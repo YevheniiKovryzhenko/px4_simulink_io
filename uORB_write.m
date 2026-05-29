@@ -1,47 +1,55 @@
 classdef uORB_write
-
     methods(Static)
-
         % Following properties of 'maskInitContext' are available to use:
         %  - BlockHandle 
         %  - MaskObject 
         %  - MaskWorkspace: Use get/set APIs to work with mask workspace.
         function MaskInitialization(maskInitContext)
-            apiInstance = px4API();
+            apiInstance = px4API(); % Enforce constructor validation and sync checks
             
             blockHandle = maskInitContext.BlockHandle;
             blockPath = getfullname(blockHandle);
-            uorb_topic = get_param(blockHandle, 'uorb_topic');
             
-            if isempty(uorb_topic)
-                error('[px4API:Error] uORB Write Block at "%s" is missing a topic selection. Please open the mask dialog and choose a valid topic.', blockPath);
+            % Unpack user selection from the active mask parameters table
+            uorb_topic = get_param(blockHandle, 'uorb_topic');
+            sample_time_val = get_param(blockHandle, 'sample_time'); % Read your mask parameter
+            
+            % Escape gracefully if block is freshly placed and unconfigured
+            if isempty(uorb_topic) || strcmp(uorb_topic, '<empty>') || isempty(strtrim(uorb_topic))
+                return;
             end
             
             % Native PX4 snake_case naming - no conversions needed
             bus_name = [uorb_topic, '_s'];
             
             c_caller_path = [blockPath '/C_Caller'];
-            inport_path = [blockPath '/In1'];
+            inport_path = [blockPath '/In1']; % FIXED: Targets the input boundary block
+
+            set_param(c_caller_path, 'SampleTime', sample_time_val);
+            set_param(inport_path, 'SampleTime', sample_time_val);
             
             if strcmp(get_param(bdroot(blockHandle), 'Lock'), 'off')
                 try
-                    % Direct native snake_case function and structure naming
+                    % FIXED: Maps the C Caller to your pass-by-value function name 'write_'
                     set_param(c_caller_path, 'FunctionName', ['write_' uorb_topic]);
+                    
+                    % Explicitly specify the input data type as the bus type
                     set_param(inport_path, 'OutDataTypeStr', ['Bus: ' bus_name]);
                 catch
                 end
             end
         end
 
-        % Use the code browser on the left to add the callbacks.
+        % Callback that handles manual user edits in the dropdown dialog GUI
         function uorb_topic(callbackContext)
             blockHandle = callbackContext.BlockHandle;
-            
-            % Query the list using your static method on your central class
+            maskObj = Simulink.Mask.get(blockHandle);
             choices = strsplit(px4API.getTopicDropdownString(), ',');
             
-            % Push choices string straight into the UI dropdown list parameter
-            set_param(blockHandle, 'TypeOptions_uorb_topic', choices);
+            paramObj = maskObj.getParameter('uorb_topic');
+            if ~isempty(paramObj)
+                paramObj.TypeOptions = choices;
+            end
         end
     end
 end

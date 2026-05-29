@@ -1,4 +1,4 @@
-classdef uORB_read
+classdef uORB_msg
     methods(Static)
         % Following properties of 'maskInitContext' are available to use:
         %  - BlockHandle 
@@ -10,9 +10,10 @@ classdef uORB_read
             blockHandle = maskInitContext.BlockHandle;
             blockPath = getfullname(blockHandle);
 
-            % Unpack user selection from the active mask parameters table
+            % Unpack user selections from the active mask parameters table
             uorb_topic = get_param(blockHandle, 'uorb_topic');
-            sample_time_val = get_param(blockHandle, 'sample_time'); % Read your mask parameter
+            sample_time_val = get_param(blockHandle, 'sample_time'); 
+            init_value = get_param(blockHandle, 'init_value'); 
 
             % Escape gracefully if block is freshly placed and unconfigured
             if isempty(uorb_topic) || strcmp(uorb_topic, '<empty>') || isempty(strtrim(uorb_topic))
@@ -30,12 +31,23 @@ classdef uORB_read
 
             if strcmp(get_param(bdroot(blockHandle), 'Lock'), 'off')
                 try
-                    % FIXED: Dynamically map the C Caller to your return-by-value function name.
-                    % Simulink handles ports, definitions, and pins automatically now.
-                    set_param(c_caller_path, 'FunctionName', ['read_' uorb_topic]);
+                    % 1. Dynamically map the C Caller to your return-by-value initialization function name
+                    set_param(c_caller_path, 'FunctionName', ['init_' uorb_topic]);
 
-                    % Explicitly specify the output data type as the bus type
-                    % This allows Simulink to properly resolve the structure definition
+                    % 2. CANONICAL R2025b FIX: Map the boolean function argument via Port Specification
+                    % This explicitly forces the 'initialize_to_nan' argument to stay hidden as an internal 
+                    % block parameter instead of drawing an unwanted left-side port arrow on your canvas face.
+                    portSpecs = get_param(c_caller_path, 'FunctionPortSpecification');
+                    if ~isempty(portSpecs) && ~isempty(portSpecs.InputArguments)
+                        portSpecs.InputArguments(1).Scope = 'Parameter';
+                        if strcmp(init_value, 'NaN')
+                            set_param(c_caller_path, portSpecs.InputArguments(1).Name, 'true');
+                        else
+                            set_param(c_caller_path, portSpecs.InputArguments(1).Name, 'false');
+                        end
+                    end
+
+                    % 3. Explicitly specify the output data type as the bus type
                     set_param(outport_path, 'OutDataTypeStr', ['Bus: ' bus_name]);
                 catch
                 end

@@ -19,3 +19,4 @@ work/
 *.synctex.gz
 generatedcode/
 Test_ert_rtw/
+*.mexa64

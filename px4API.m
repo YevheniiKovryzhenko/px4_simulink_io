@@ -1,7 +1,8 @@
 classdef px4API < handle
     properties
         % User-defined configuration parameters
-        MatlabProjectRoot = fullfile('~', 'GitHub', 'px4_simulink_io'); % Path to your main PX4 repository
+        % MatlabProjectRoot = fullfile('~', 'GitHub', 'px4_simulink_io'); % Path to your main PX4 repository
+        MatlabProjectRoot = fullfile('/', 'mnt', 'nvme0n1p1', 'jack', 'GitHub', 'px4_simulink_io')
         PX4Root = fullfile('~', 'PX4', 'v1.17.0'); % Path to your main PX4 repository
         PX4ModuleName = 'simulink_io';            % Target PX4 module folder name
         AllowedExtensions = {'.cpp', '.h'};       % File filter types
@@ -62,11 +63,13 @@ classdef px4API < handle
             obj.regenerateBusesInWorkspace();
             
             % Only regenerate files if needed
-            if obj.needsGeneration()
+            [needsGeneration, generationReason] = obj.needsGeneration();
+            if needsGeneration
+                fprintf('! Regenerating generated artifacts: %s\n', generationReason);
                 % Prepare all generated artifacts locally (header, source, glue, cache)
                 obj.prepareLocalGeneratedArtifacts();
             else
-                fprintf('✓ Generated artifacts present and up-to-date; skipping file regeneration.\n');
+                fprintf('✓ Generated artifacts present and up-to-date; skipping file regeneration. (%s)\n', generationReason);
             end
         end
 
@@ -102,7 +105,7 @@ classdef px4API < handle
                 return;
             end
 
-            msgFiles = dir(fullfile(msgDir, '*.msg'));
+            msgFiles = dir(fullfile(msgDir, '**', '*.msg'));
             if isempty(msgFiles)
                 fprintf('! Warning: No .msg files found, skipping bus generation\n');
                 return;
@@ -112,11 +115,12 @@ classdef px4API < handle
             
             busCount = 0;
             for i = 1:length(msgFiles)
+                msgFilePath = fullfile(msgFiles(i).folder, msgFiles(i).name);
                 [~, camelName, ~] = fileparts(msgFiles(i).name);
                 topicName = px4API.camelCaseToSnakeCase(camelName);
 
                 try
-                    [~, busObj, ~] = obj.generateBusFromMsg(camelName, topicName);
+                    [~, busObj, ~] = obj.generateBusFromMsg(camelName, topicName, msgFilePath);
                     if ~isempty(busObj)
                         nativeStructName = [topicName, '_s'];
                         assignin('base', nativeStructName, busObj);
@@ -136,10 +140,11 @@ classdef px4API < handle
             fprintf('✓ ORB cache populated.\n');
         end
 
-        function needed = needsGeneration(obj)
+        function [needed, reason] = needsGeneration(obj)
             % Determine whether generation is necessary.
             % Strategy: if the stub header and source exist and are newer than
-            % the newest .msg file in PX4 msg/, we can skip regeneration.
+            % both the newest .msg file anywhere under PX4 msg/ and the generator
+            % MATLAB sources, we can skip regeneration.
             needed = true;
 
             hdrPath = fullfile(obj.LocalGeneratedDir, obj.StubHeaderName);
@@ -147,18 +152,21 @@ classdef px4API < handle
             gluePath = fullfile(obj.LocalGeneratedDir, 'simulink_io_glue.cpp');
 
             if ~(exist(hdrPath, 'file') == 2 && exist(srcPath, 'file') == 2 && exist(gluePath, 'file') == 2)
+                reason = 'one or more generated files are missing';
                 return;
             end
 
             msgDir = fullfile(obj.PX4Root, 'msg');
             if ~exist(msgDir, 'dir')
+                reason = 'PX4 msg directory is missing';
                 return; % conservative: if we can't find msg dir, require generation
             end
 
             % Find newest msg file modification time
-            msgFiles = dir(fullfile(msgDir, '*.msg'));
+            msgFiles = dir(fullfile(msgDir, '**', '*.msg'));
             if isempty(msgFiles)
                 needed = false;
+                reason = 'no PX4 .msg files were found';
                 return;
             end
             newestMsg = max([msgFiles(:).datenum]);
@@ -170,8 +178,38 @@ classdef px4API < handle
             srcTime = srcInfo.datenum;
             glueTime = glueInfo.datenum;
 
-            % if all generated files are newer or equal to newest msg, skip
-            needed = ~(hdrTime >= newestMsg && srcTime >= newestMsg && glueTime >= newestMsg);
+            generatorTimes = [];
+            generatorFiles = {
+                fullfile(obj.MatlabProjectRoot, 'px4API.m')
+                fullfile(obj.MatlabProjectRoot, 'uORB_read.m')
+                fullfile(obj.MatlabProjectRoot, 'uORB_write.m')
+                fullfile(obj.MatlabProjectRoot, 'uORB_msg.m')
+            };
+            for i = 1:numel(generatorFiles)
+                filePath = generatorFiles{i};
+                if exist(filePath, 'file') == 2
+                    info = dir(filePath);
+                    if ~isempty(info)
+                        generatorTimes(end+1) = info(1).datenum; %#ok<AGROW>
+                    end
+                end
+            end
+            if isempty(generatorTimes)
+                newestGeneratorTime = -inf;
+            else
+                newestGeneratorTime = max(generatorTimes);
+            end
+
+            % if all generated files are newer or equal to both the newest msg and
+            % the newest generator source, skip
+            newestDependencyTime = max(newestMsg, newestGeneratorTime);
+            if hdrTime >= newestDependencyTime && srcTime >= newestDependencyTime && glueTime >= newestDependencyTime
+                needed = false;
+                reason = 'generated files are newer than PX4 messages and generator sources';
+            else
+                needed = true;
+                reason = 'PX4 messages or generator sources are newer than generated files';
+            end
         end
 
         function orbId = findOrbIdForTopic(obj, snakeName)
@@ -246,7 +284,7 @@ classdef px4API < handle
             cacheTime = cacheInfo.datenum;
             msgDir = fullfile(obj.PX4Root, 'msg');
             if exist(msgDir, 'dir')
-                msgFiles = dir(fullfile(msgDir, '*.msg'));
+                msgFiles = dir(fullfile(msgDir, '**', '*.msg'));
                 if ~isempty(msgFiles) && max([msgFiles(:).datenum]) > cacheTime
                     obj.OrbCache = struct('timestamp', {}, 'topics', struct());
                     return;
@@ -267,7 +305,7 @@ classdef px4API < handle
             % If the cache looks incomplete, rebuild from source
             try
                 msgDir = fullfile(obj.PX4Root, 'msg');
-                msgFiles = dir(fullfile(msgDir, '*.msg'));
+                msgFiles = dir(fullfile(msgDir, '**', '*.msg'));
                 numMsgs = length(msgFiles);
                 cacheTopics = fieldnames(obj.OrbCache.topics);
                 if numMsgs > 0 && length(cacheTopics) < max(10, floor(0.8 * numMsgs))
@@ -374,7 +412,7 @@ classdef px4API < handle
             % (This allows generation to proceed even if some topics can't be found)
             msgDir = fullfile(obj.PX4Root, 'msg');
             if exist(msgDir, 'dir')
-                msgFiles = dir(fullfile(msgDir, '*.msg'));
+                msgFiles = dir(fullfile(msgDir, '**', '*.msg'));
                 for i = 1:length(msgFiles)
                     [~, camelName] = fileparts(msgFiles(i).name);
                     topicName = px4API.camelCaseToSnakeCase(camelName);
@@ -488,8 +526,22 @@ classdef px4API < handle
                 error('[px4API:Error] Could not find PX4 msg directory at: %s', msgDir);
             end
 
-            msgFiles = dir(fullfile(msgDir, '*.msg'));
-            fprintf('Found %d message profiles. Generating Simulink Buses & Structs...\n', length(msgFiles));
+            % Scans ALL subdirectories recursively to catch versioned or hidden messages.
+            rawMsgFiles = dir(fullfile(msgDir, '**', '*.msg'));
+
+            % Deduplicate by topic name to keep the first matching profile per topic.
+            msgFiles = [];
+            processedTopics = {};
+            for idx = 1:length(rawMsgFiles)
+                [~, camelName, ~] = fileparts(rawMsgFiles(idx).name);
+                topicName = px4API.camelCaseToSnakeCase(camelName);
+                if ~any(strcmp(processedTopics, topicName))
+                    processedTopics{end+1} = topicName; %#ok<AGROW>
+                    msgFiles = [msgFiles; rawMsgFiles(idx)]; %#ok<AGROW>
+                end
+            end
+
+            fprintf('Found %d total unique message profiles across all subfolders. Generating Simulink Buses...\n', length(msgFiles));
 
             % PASS 1: Collect all struct definitions and build comprehensive metadata cache
             allStructs = {};  % Will store {topicName, structStr, dependencies} triplets
@@ -501,11 +553,12 @@ classdef px4API < handle
             end
             
             for i = 1:length(msgFiles)
+                msgFilePath = fullfile(msgFiles(i).folder, msgFiles(i).name);
                 [~, camelName, ~] = fileparts(msgFiles(i).name);
                 topicName = px4API.camelCaseToSnakeCase(camelName);  % Convert to snake_case
 
                 try
-                    [structString, busObj, deps, fieldMeta] = obj.generateBusFromMsg(camelName, topicName);
+                    [structString, busObj, deps, fieldMeta] = obj.generateBusFromMsg(camelName, topicName, msgFilePath);
                     if ~isempty(structString)
                         allStructs{end+1, 1} = topicName; %#ok<AGROW>
                         allStructs{end, 2} = structString; %#ok<AGROW>
@@ -582,7 +635,6 @@ classdef px4API < handle
             headerStr = sprintf('%s#ifdef __cplusplus\nextern "C" {\n#endif\n\n', headerStr);
             headerStr = sprintf('%s// --- STRONGLY-TYPED RETURN-BY-VALUE PROTOTYPES FOR C CALLER ---\n', headerStr);
             
-            srcStr = sprintf('// Empty stubs for Simulink simulation target parsing\n');
             srcStr = sprintf('#include "%s"\n\n', obj.StubHeaderName);
             
             % For PX4 builds, implementations are in simulink_io_glue.cpp
@@ -614,6 +666,20 @@ classdef px4API < handle
             headerStr = sprintf('%s\n// --- NATIVE HIGH-RESOLUTION SYSTEM CLOCK INTERFACES ---\n', headerStr);
             headerStr = sprintf('%suint64_t read_px4_system_time(void);\n', headerStr);            
             srcStr = sprintf('%sextern "C" uint64_t read_px4_system_time(void) { return 0; }\n', srcStr);
+
+            % =========================================================================
+            % NATIVE PARAMETER ENGINE SYSTEM BRIDGES FOR C CALLER
+            % =========================================================================
+            headerStr = sprintf('%s\n// --- NATIVE LIVE PARAMETER SYSTEM BRIDGES ---\n', headerStr);
+            headerStr = sprintf('%sfloat read_px4_param_float(const char* param_name);\n', headerStr);
+            headerStr = sprintf('%sint32_t read_px4_param_int32(const char* param_name);\n', headerStr);
+            headerStr = sprintf('%svoid write_px4_param_float(const char* param_name, float value);\n', headerStr);
+            headerStr = sprintf('%svoid write_px4_param_int32(const char* param_name, int32_t value);\n', headerStr);
+
+            srcStr = sprintf('%sextern "C" float read_px4_param_float(const char* param_name) { return 0.0f; }\n', srcStr);
+            srcStr = sprintf('%sextern "C" int32_t read_px4_param_int32(const char* param_name) { return 0; }\n', srcStr);
+            srcStr = sprintf('%sextern "C" void write_px4_param_float(const char* param_name, float value) {}\n', srcStr);
+            srcStr = sprintf('%sextern "C" void write_px4_param_int32(const char* param_name, int32_t value) {}\n', srcStr);
             
             srcStr = sprintf('%s#endif\n', srcStr);
 
@@ -658,16 +724,18 @@ classdef px4API < handle
         end
 
 
-        function [structStr, busObj, dependencies, fieldMetadata] = generateBusFromMsg(obj, camelName, topicName)
+        function [structStr, busObj, dependencies, fieldMetadata] = generateBusFromMsg(obj, camelName, topicName, msgFilePath)
             % Generate Simulink bus structure from PX4 .msg file
             % Returns: structStr (C struct definition), busObj (Simulink bus), dependencies (list of required structs)
             %          fieldMetadata (table of field info: fieldName, fieldType, arraySize)
             % camelName: original CamelCase filename (used to open the file)
             % topicName: snake_case topic name (used for struct naming)
+            % msgFilePath: fully-qualified path to the discovered .msg file when scanning subfolders
             % 
             % If called with single argument (legacy), assume input is already camelName
             if nargin == 2
                 topicName = px4API.camelCaseToSnakeCase(camelName);
+                msgFilePath = '';
             end
             
             structStr = '';
@@ -675,8 +743,20 @@ classdef px4API < handle
             dependencies = {};
             fieldMetadata = table();  % Initialize empty table for field metadata
             
-            % Open file using the original CamelCase filename
-            msgFilePath = fullfile(obj.PX4Root, 'msg', [camelName, '.msg']);
+            % Open the discovered file path when available; otherwise fall back to a recursive search.
+            if nargin < 4 || isempty(msgFilePath)
+                msgFilePath = fullfile(obj.PX4Root, 'msg', [camelName, '.msg']);
+                if exist(msgFilePath, 'file') ~= 2
+                    fallbackFiles = dir(fullfile(obj.PX4Root, 'msg', '**', '*.msg'));
+                    for fallbackIdx = 1:length(fallbackFiles)
+                        [~, fallbackCamelName, ~] = fileparts(fallbackFiles(fallbackIdx).name);
+                        if strcmp(fallbackCamelName, camelName)
+                            msgFilePath = fullfile(fallbackFiles(fallbackIdx).folder, fallbackFiles(fallbackIdx).name);
+                            break;
+                        end
+                    end
+                end
+            end
             fid = fopen(msgFilePath, 'r');
             if fid == -1
                 error('[px4API:Error] Could not open message file: %s', msgFilePath);
@@ -898,9 +978,10 @@ classdef px4API < handle
                 testContent = fread(fid, '*char')';
                 fclose(fid);
                 
-                % Find all read_TOPIC() and write_TOPIC() calls
-                readMatches = regexp(testContent, 'read_(\w+)\s*\(', 'tokens');
-                writeMatches = regexp(testContent, 'write_(\w+)\s*\(', 'tokens');
+                % Find all read_TOPIC() and write_TOPIC() calls, but keep PX4 parameter
+                % helpers out of the uORB topic list.
+                readMatches = regexp(testContent, 'read_(?!px4_param_)(\w+)\s*\(', 'tokens');
+                writeMatches = regexp(testContent, 'write_(?!px4_param_)(\w+)\s*\(', 'tokens');
                 
                 % FIXED MATRICES BLOCK: Force convert both results into linear row cells 
                 % to prevent dimension mismatch crashes regardless of argument contents.
@@ -920,7 +1001,7 @@ classdef px4API < handle
             else
                 fprintf('  Warning: Could not find Test.cpp, generating for all topics\n');
                 msgDir = fullfile(obj.PX4Root, 'msg');
-                msgFiles = dir(fullfile(msgDir, '*.msg'));
+                msgFiles = dir(fullfile(msgDir, '**', '*.msg'));
                 for i = 1:length(msgFiles)
                     [~, camelName, ~] = fileparts(msgFiles(i).name);
                     requiredTopics{i} = px4API.camelCaseToSnakeCase(camelName);
@@ -1054,12 +1135,40 @@ classdef px4API < handle
             end
 
             % =========================================================================
-            % 4. HIGH-RESOLUTION SYSTEM TIMER INTERFACE
+            % 5. HIGH-SPEED RUNTIME VALIDATION PARAMETER LAYER
             % =========================================================================
-            % cppStr = sprintf('%s\n// --- NATIVE HIGH-RESOLUTION SYSTEM CLOCK IMPLEMENTATION ---\n', cppStr);
-            % cppStr = sprintf('%s#include <drivers/drv_hrt.h>\n', cppStr); 
-            % cppStr = sprintf('%s__attribute__((used)) uint64_t read_px4_system_time(void) {\n', cppStr);
-            % cppStr = sprintf('%s    return hrt_absolute_time();\n}\n', cppStr);
+            cppStr = sprintf('%s\n// --- OPTIMIZED CACHED PARAMETER ACCESS LAYER ---\n', cppStr);
+            cppStr = sprintf('%s#include <parameters/param.h>\n', cppStr); % Native PX4 parameter system header
+            
+            % RUNTIME VALIDATION FLOAT READER
+            cppStr = sprintf('%s__attribute__((used)) float read_px4_param_float(const char* param_name) {\n', cppStr);
+            cppStr = sprintf('%s    param_t handle = px4_lookup_param_handle(param_name);\n', cppStr);
+            cppStr = sprintf('%s    if (handle != PARAM_INVALID && param_type(handle) == PARAM_TYPE_FLOAT) {\n', cppStr);
+            cppStr = sprintf('%s        float val = NAN;\n', cppStr);
+            cppStr = sprintf('%s        if (param_get(handle, &val) == 0) { return val; }\n', cppStr);
+            cppStr = sprintf('%s    }\n', cppStr);
+            cppStr = sprintf('%s    return NAN;\n}\n\n', cppStr);
+
+            cppStr = sprintf('%s__attribute__((used)) int32_t read_px4_param_int32(const char* param_name) {\n', cppStr);
+            cppStr = sprintf('%s    param_t handle = px4_lookup_param_handle(param_name);\n', cppStr);
+            cppStr = sprintf('%s    if (handle != PARAM_INVALID && param_type(handle) == PARAM_TYPE_INT32) {\n', cppStr);
+            cppStr = sprintf('%s        int32_t val = 0;\n', cppStr);
+            cppStr = sprintf('%s        if (param_get(handle, &val) == 0) { return val; }\n', cppStr);
+            cppStr = sprintf('%s    }\n', cppStr);
+            cppStr = sprintf('%s    return 0;\n}\n\n', cppStr);
+
+            % RUNTIME VALIDATION WRITERS
+            cppStr = sprintf('%s__attribute__((used)) void write_px4_param_float(const char* param_name, float value) {\n', cppStr);
+            cppStr = sprintf('%s    param_t handle = px4_lookup_param_handle(param_name);\n', cppStr);
+            cppStr = sprintf('%s    if (handle != PARAM_INVALID && param_type(handle) == PARAM_TYPE_FLOAT) {\n', cppStr);
+            cppStr = sprintf('%s        param_set(handle, &value);\n', cppStr);
+            cppStr = sprintf('%s    }\n}\n\n', cppStr);
+
+            cppStr = sprintf('%s__attribute__((used)) void write_px4_param_int32(const char* param_name, int32_t value) {\n', cppStr);
+            cppStr = sprintf('%s    param_t handle = px4_lookup_param_handle(param_name);\n', cppStr);
+            cppStr = sprintf('%s    if (handle != PARAM_INVALID && param_type(handle) == PARAM_TYPE_INT32) {\n', cppStr);
+            cppStr = sprintf('%s        param_set(handle, &value);\n', cppStr);
+            cppStr = sprintf('%s    }\n}\n\n', cppStr);
             
             % Close the C Linkage macro bracket block safely
             cppStr = sprintf('%s}\n', cppStr);
@@ -1210,24 +1319,29 @@ classdef px4API < handle
             api = px4API();
             msgDir = fullfile(api.PX4Root, 'msg');
             if ~exist(msgDir, 'dir')
-                listStr = 'vehicle_local_position,sensor_combined';
-                return;
+                error('[px4API:Error] Could not find the mandatory PX4 message root folder directory at: %s', msgDir);
             end
 
-            files = dir(fullfile(msgDir, '*.msg'));
+            files = dir(fullfile(msgDir, '**', '*.msg'));
             topics = {};
             for i = 1:length(files)
                 [~, camelName, ~] = fileparts(files(i).name);
+
                 % Convert CamelCase filename to snake_case uORB topic name
                 topicName = px4API.camelCaseToSnakeCase(camelName);
+
+                % Skip internal metadata framework tags
+                if strcmp(topicName, 'message_version'), continue; end
+
                 topics{end+1} = topicName; %#ok<AGROW>
             end
 
+            % Clean out any empties, deduplicate across subfolders, and sort alphabetically
             topics = unique(topics(~cellfun(@isempty, topics)));
             listStr = strjoin(topics, ',');
         end
 
-        function runPostCodeGen(buildInfo, ~)
+        function runPostCodeGen(buildInfo)
             % Hook called instantly upon Simulink code-gen complete
             apiInstance = px4API();
             apiInstance.exportGeneratedCode(buildInfo);

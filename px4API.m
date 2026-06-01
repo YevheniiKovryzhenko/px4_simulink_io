@@ -22,7 +22,8 @@ classdef px4API < handle
     properties
         % ===== USER CONFIGURATION =====
         % Absolute path to MATLAB project directory containing this file
-        MatlabProjectRoot = fullfile('/', 'mnt', 'nvme0n1p1', 'jack', 'GitHub', 'px4_simulink_io')
+        % MatlabProjectRoot = fullfile('/', 'mnt', 'nvme0n1p1', 'jack', 'GitHub', 'px4_simulink_io')
+        MatlabProjectRoot = fullfile('~', 'GitHub', 'px4_simulink_io')
         
         % Absolute path to PX4 firmware repository root
         PX4Root = fullfile('~', 'PX4', 'v1.17.0-mod')

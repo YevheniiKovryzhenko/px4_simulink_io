@@ -18,5 +18,6 @@ work/
 *.fls
 *.synctex.gz
 generatedcode/
-Test_ert_rtw/
+*_ert_rtw/
 *.mexa64
+tmwinternal/

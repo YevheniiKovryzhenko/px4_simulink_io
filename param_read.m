@@ -1,10 +1,59 @@
+% param_read - Mask initialization for PX4 parameter reader blocks
+%
+% This mask class configures the mask initialization function for a Simulink subsystem
+% that reads a PX4 parameter value by name (string).
+%
+% Block interface:
+%   Parameters:
+%     - param_name (string): PX4 parameter name (e.g., 'SYS_AUTOSTART')
+%     - sample_time (string): Simulink sample time (e.g., '-1' for inherited)
+%     - param_type (string): Parameter data type ('int32', 'float', 'single')
+%
+%   Inputs:
+%     - Parameter name (String Constant or From Workspace block)
+%       Connect a string input that provides the parameter name at runtime
+%
+%   Output port (Out1):
+%     - Type: int32 or single (based on param_type)
+%     - Output of read_px4_param_int32() or read_px4_param_float() C function
+%
+% Functionality:
+%   1. Selects appropriate read function based on param_type
+%   2. Configures output port data type (int32 or single)
+%   3. Parameter name is passed from connected input block
+%   4. Performs runtime type checking and validation
+%
+% Generated C code:
+%   int32_t read_px4_param_int32(const char* param_name)
+%   float read_px4_param_float(const char* param_name)
+%     - Looks up parameter by name (param_find)
+%     - Validates parameter type matches
+%     - Returns value or 0/NaN on error
+%
+% Usage:
+%   1. Place block from Simulink library
+%   2. Select parameter type (int32 or float)
+%   3. Connect String Constant block to parameter name input
+%   4. Output is the parameter value
+%   5. Use in control loops, tuning, initialization
+%
+% Note: Parameter name must be a valid PX4 parameter.
+% Returns 0 (int32) or NaN (float) if parameter not found or wrong type.
+
 classdef param_read
     methods(Static)
-        % Following properties of 'maskInitContext' are available to use:
-        %  - BlockHandle
-        %  - MaskObject
-        %  - MaskWorkspace: Use get/set APIs to work with mask workspace.
+        % maskInitContext properties available:
+        %  - BlockHandle: Handle to the mask (this block)
+        %  - MaskObject: Simulink mask object
+        %  - MaskWorkspace: Access to mask parameter values
+        
         function MaskInitialization(maskInitContext)
+            % Primary mask initialization function.
+            %
+            % Configures C Caller block to use the appropriate parameter read function
+            % (read_px4_param_int32 or read_px4_param_float) based on param_type.
+            % Sets output port data type to match parameter type.
+            
             px4API();
 
             blockHandle = maskInitContext.BlockHandle;
@@ -44,6 +93,17 @@ classdef param_read
         end
 
         function paramType = getParamDatatype(blockHandle)
+            % Retrieve parameter data type from mask parameter (with fallback).
+            %
+            % Attempts to read 'param_type' parameter, falling back to 'datatype'.
+            % Returns default 'int32' if neither is found.
+            %
+            % Input:
+            %   blockHandle - Simulink block handle
+            %
+            % Output:
+            %   paramType - Data type string ('int32', 'float32', 'single', etc.)
+            
             paramType = 'int32';
             try
                 paramType = get_param(blockHandle, 'param_type');
@@ -56,6 +116,18 @@ classdef param_read
         end
 
         function paramType = normalizeParamDatatype(paramType)
+            % Normalize parameter data type to canonical form.
+            %
+            % Converts various data type naming conventions to standard forms:
+            %   - 'float32', 'single' -> 'float' (uses read_px4_param_float)
+            %   - All others -> 'int32' (uses read_px4_param_int32)
+            %
+            % Input:
+            %   paramType - Raw parameter type string
+            %
+            % Output:
+            %   paramType - Normalized type ('float' or 'int32')
+            
             paramType = lower(strtrim(string(paramType)));
             if paramType == "single" || paramType == "float32"
                 paramType = 'float';

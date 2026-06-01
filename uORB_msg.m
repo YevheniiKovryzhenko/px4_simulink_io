@@ -1,9 +1,42 @@
+% uORB_msg - Mask initialization for uORB message initialization blocks
+%
+% This mask class configures the mask initialization function for a Simulink subsystem
+% that initializes uORB topic structures with zeros (or NaN for float fields).
+%
+% Block interface:
+%   Parameters:
+%     - uorb_topic (string): PX4 topic name (snake_case, auto-populated dropdown)
+%     - sample_time (string): Simulink sample time (e.g., '-1' for inherited)
+%     - init_value (string): Initialization strategy ('Zero' or 'NaN')
+%
+%   Output port (Out1):
+%     - Type: Bus (named <uorb_topic>_s)
+%     - Output of init_<uorb_topic>() C function
+%
+% Functionality:
+%   1. Maps block to init_<uorb_topic>() C function
+%   2. Sets initialize_to_nan parameter based on init_value selection
+%   3. Configures output port data type to match topic structure
+%   4. Updates dropdown choices when topic parameter is edited
+%
+% Generated C code:
+%   struct <topic>_s init_<topic>(bool initialize_to_nan)
+%     - Returns zero-initialized struct
+%     - If initialize_to_nan=true, float fields set to NaN
+%
+% Usage:
+%   1. Place block from Simulink library
+%   2. Select uorb_topic from dropdown
+%   3. Block automatically configures C function call
+%   4. Connect output to other blocks using same topic type
+
 classdef uORB_msg
     methods(Static)
-        % Following properties of 'maskInitContext' are available to use:
-        %  - BlockHandle 
-        %  - MaskObject 
-        %  - MaskWorkspace: Use get/set APIs to work with mask workspace.        
+        % maskInitContext properties available:
+        %  - BlockHandle: Handle to the mask (this block)
+        %  - MaskObject: Simulink mask object
+        %  - MaskWorkspace: Access to mask parameter values
+        
         function MaskInitialization(maskInitContext)
             apiInstance = px4API(); % Enforce constructor validation and sync checks
 
@@ -54,8 +87,11 @@ classdef uORB_msg
             end
         end
 
-        % Callback that handles manual user edits in the dropdown dialog GUI
         function uorb_topic(callbackContext)
+            % Mask parameter callback - updates dropdown choices when user edits topic parameter.
+            %
+            % Called whenever the 'uorb_topic' parameter value changes.
+            % Refreshes the list of available topics from px4API to reflect current PX4 messages.
             blockHandle = callbackContext.BlockHandle;
             maskObj = Simulink.Mask.get(blockHandle);
             choices = strsplit(px4API.getTopicDropdownString(), ',');

@@ -44,17 +44,18 @@ void SimulinkIO::run()
             // Extract a read-only handle reference to the private data structure
             const Test::ExtY_Test_T &outputs = _simulink_model.getExternalOutputs();
 
-            // Print acceleration outputs cleanly
-            PX4_INFO("Simulink Live Input -> Topic Out1 xyz: %f, %f, %f",
-                     (double)outputs.Out1.xyz[0],
-                     (double)outputs.Out1.xyz[1],
-                     (double)outputs.Out1.xyz[2]);
+            PX4_INFO("[Simulink Test] Local Position: %f, %f, %f",
+                     (double)outputs.Out1.x,
+                     (double)outputs.Out1.y,
+                     (double)outputs.Out1.z);
 
-            // Print position setpoint data fields cleanly
-            PX4_INFO("Simulink Live Input -> Topic Out2 Position SP: %f, %f, %f",
+            PX4_INFO("[Simulink Test] Local Position Setpoint: %f, %f, %f",
                      (double)outputs.Out2.x,
                      (double)outputs.Out2.y,
                      (double)outputs.Out2.z);
+
+            PX4_INFO("[Simulink Test] Parameter Read: %f",
+                     (double)outputs.Out3);
 
             iteration_counter = 0; // Reset counter
         }

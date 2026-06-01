@@ -25,7 +25,7 @@ classdef px4API < handle
         MatlabProjectRoot = fullfile('/', 'mnt', 'nvme0n1p1', 'jack', 'GitHub', 'px4_simulink_io')
         
         % Absolute path to PX4 firmware repository root
-        PX4Root = fullfile('~', 'PX4', 'v1.17.0')
+        PX4Root = fullfile('~', 'PX4', 'v1.17.0-mod')
         
         % Name of target PX4 module (directory in src/modules/)
         PX4ModuleName = 'simulink_io'

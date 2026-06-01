@@ -3,6 +3,7 @@ classdef px4API < handle
         % User-defined configuration parameters
         % MatlabProjectRoot = fullfile('~', 'GitHub', 'px4_simulink_io'); % Path to your main PX4 repository
         MatlabProjectRoot = fullfile('/', 'mnt', 'nvme0n1p1', 'jack', 'GitHub', 'px4_simulink_io')
+        
         PX4Root = fullfile('~', 'PX4', 'v1.17.0'); % Path to your main PX4 repository
         PX4ModuleName = 'simulink_io';            % Target PX4 module folder name
         AllowedExtensions = {'.cpp', '.h'};       % File filter types
@@ -1137,12 +1138,15 @@ classdef px4API < handle
             % =========================================================================
             % 5. HIGH-SPEED RUNTIME VALIDATION PARAMETER LAYER
             % =========================================================================
-            cppStr = sprintf('%s\n// --- OPTIMIZED CACHED PARAMETER ACCESS LAYER ---\n', cppStr);
+            % Close the C linkage block so C++ headers can declare C++ linkage symbols.
+            cppStr = sprintf('%s\n} // extern "C"\n\n', cppStr);
+            cppStr = sprintf('%s// --- OPTIMIZED CACHED PARAMETER ACCESS LAYER ---\n', cppStr);
             cppStr = sprintf('%s#include <parameters/param.h>\n', cppStr); % Native PX4 parameter system header
+            cppStr = sprintf('%s\nextern "C" {\n\n', cppStr); % Reopen C linkage for parameter functions
             
             % RUNTIME VALIDATION FLOAT READER
             cppStr = sprintf('%s__attribute__((used)) float read_px4_param_float(const char* param_name) {\n', cppStr);
-            cppStr = sprintf('%s    param_t handle = px4_lookup_param_handle(param_name);\n', cppStr);
+            cppStr = sprintf('%s    param_t handle = param_find(param_name);\n', cppStr);
             cppStr = sprintf('%s    if (handle != PARAM_INVALID && param_type(handle) == PARAM_TYPE_FLOAT) {\n', cppStr);
             cppStr = sprintf('%s        float val = NAN;\n', cppStr);
             cppStr = sprintf('%s        if (param_get(handle, &val) == 0) { return val; }\n', cppStr);
@@ -1150,7 +1154,7 @@ classdef px4API < handle
             cppStr = sprintf('%s    return NAN;\n}\n\n', cppStr);
 
             cppStr = sprintf('%s__attribute__((used)) int32_t read_px4_param_int32(const char* param_name) {\n', cppStr);
-            cppStr = sprintf('%s    param_t handle = px4_lookup_param_handle(param_name);\n', cppStr);
+            cppStr = sprintf('%s    param_t handle = param_find(param_name);\n', cppStr);
             cppStr = sprintf('%s    if (handle != PARAM_INVALID && param_type(handle) == PARAM_TYPE_INT32) {\n', cppStr);
             cppStr = sprintf('%s        int32_t val = 0;\n', cppStr);
             cppStr = sprintf('%s        if (param_get(handle, &val) == 0) { return val; }\n', cppStr);
@@ -1158,16 +1162,27 @@ classdef px4API < handle
             cppStr = sprintf('%s    return 0;\n}\n\n', cppStr);
 
             % RUNTIME VALIDATION WRITERS
+            % Only update if value actually changed to avoid unnecessary notifications and syncs
             cppStr = sprintf('%s__attribute__((used)) void write_px4_param_float(const char* param_name, float value) {\n', cppStr);
-            cppStr = sprintf('%s    param_t handle = px4_lookup_param_handle(param_name);\n', cppStr);
+            cppStr = sprintf('%s    param_t handle = param_find(param_name);\n', cppStr);
             cppStr = sprintf('%s    if (handle != PARAM_INVALID && param_type(handle) == PARAM_TYPE_FLOAT) {\n', cppStr);
-            cppStr = sprintf('%s        param_set(handle, &value);\n', cppStr);
+            cppStr = sprintf('%s        float current_val = 0.0f;\n', cppStr);
+            cppStr = sprintf('%s        if (param_get(handle, &current_val) == 0) {\n', cppStr);
+            cppStr = sprintf('%s            if (fabsf(current_val - value) > 1e-6f) {  // FLT_EPSILON-like comparison\n', cppStr);
+            cppStr = sprintf('%s                param_set(handle, &value);\n', cppStr);
+            cppStr = sprintf('%s            }\n', cppStr);
+            cppStr = sprintf('%s        }\n', cppStr);
             cppStr = sprintf('%s    }\n}\n\n', cppStr);
 
             cppStr = sprintf('%s__attribute__((used)) void write_px4_param_int32(const char* param_name, int32_t value) {\n', cppStr);
-            cppStr = sprintf('%s    param_t handle = px4_lookup_param_handle(param_name);\n', cppStr);
+            cppStr = sprintf('%s    param_t handle = param_find(param_name);\n', cppStr);
             cppStr = sprintf('%s    if (handle != PARAM_INVALID && param_type(handle) == PARAM_TYPE_INT32) {\n', cppStr);
-            cppStr = sprintf('%s        param_set(handle, &value);\n', cppStr);
+            cppStr = sprintf('%s        int32_t current_val = 0;\n', cppStr);
+            cppStr = sprintf('%s        if (param_get(handle, &current_val) == 0) {\n', cppStr);
+            cppStr = sprintf('%s            if (current_val != value) {\n', cppStr);
+            cppStr = sprintf('%s                param_set(handle, &value);\n', cppStr);
+            cppStr = sprintf('%s            }\n', cppStr);
+            cppStr = sprintf('%s        }\n', cppStr);
             cppStr = sprintf('%s    }\n}\n\n', cppStr);
             
             % Close the C Linkage macro bracket block safely

@@ -12,23 +12,6 @@
 %   Output port (Out1):
 %     - Type: Bus (named <uorb_topic>_s)
 %     - Output of init_<uorb_topic>() C function
-%
-% Functionality:
-%   1. Maps block to init_<uorb_topic>() C function
-%   2. Sets initialize_to_nan parameter based on init_value selection
-%   3. Configures output port data type to match topic structure
-%   4. Updates dropdown choices when topic parameter is edited
-%
-% Generated C code:
-%   struct <topic>_s init_<topic>(bool initialize_to_nan)
-%     - Returns zero-initialized struct
-%     - If initialize_to_nan=true, float fields set to NaN
-%
-% Usage:
-%   1. Place block from Simulink library
-%   2. Select uorb_topic from dropdown
-%   3. Block automatically configures C function call
-%   4. Connect output to other blocks using same topic type
 
 classdef uORB_msg
     methods(Static)
@@ -41,6 +24,7 @@ classdef uORB_msg
             apiInstance = px4API(); % Enforce constructor validation and sync checks
 
             blockHandle = maskInitContext.BlockHandle;
+            maskObj = maskInitContext.MaskObject; % Grab the mask object wrapper
             blockPath = getfullname(blockHandle);
 
             % Unpack user selections from the active mask parameters table
@@ -50,11 +34,49 @@ classdef uORB_msg
 
             % Escape gracefully if block is freshly placed and unconfigured
             if isempty(uorb_topic) || strcmp(uorb_topic, '<empty>') || isempty(strtrim(uorb_topic))
+                variantParam = maskObj.getParameter('uorb_variant');
+                if ~isempty(variantParam)
+                    variantParam.Visible = 'off';
+                end
                 return;
             end
 
-            % Native PX4 snake_case naming - no conversions needed
-            bus_name = [uorb_topic, '_s'];
+            % DYNAMIC VISIBILITY CONTROL & BACKEND POPULATION
+            variantParam = maskObj.getParameter('uorb_variant');
+            if ~isempty(variantParam)
+                variants = apiInstance.getTopicVariants(uorb_topic);
+                
+                % Ensure the underlying list options are configured properly
+                if isempty(variants) || (numel(variants) == 1 && strcmp(variants{1}, '<empty>'))
+                    variants = {uorb_topic};
+                end
+                variantParam.TypeOptions = variants;
+
+                % ALWAYS POPULATE INTERNALLY: Fallback to base topic if invalid or empty
+                currentVariant = get_param(blockHandle, 'uorb_variant');
+                if isempty(currentVariant) || strcmp(currentVariant, '<empty>') || ~any(strcmp(currentVariant, variants))
+                    set_param(blockHandle, 'uorb_variant', variants{1});
+                end
+
+                % Evaluate structural hidden conditions
+                isSingleRedundantOption = (numel(variants) == 1) && strcmp(variants{1}, uorb_topic);
+                
+                if isSingleRedundantOption
+                    variantParam.Visible = 'off'; % Hide the redundant UI field
+                else
+                    variantParam.Visible = 'on';  % Show because multiple options or unique names exist
+                end
+            end
+
+            % Re-fetch target topic now that internal fields are guaranteed to have values
+            selectedTopic = get_param(blockHandle, 'uorb_variant');
+            if isempty(selectedTopic) || strcmp(selectedTopic, '<empty>')
+                selectedTopic = uorb_topic;
+            end
+
+            % Determine the base message type for the selected topic or variant.
+            baseTopic = apiInstance.getBaseTopicForVariant(selectedTopic);
+            bus_name = [baseTopic, '_s'];
 
             c_caller_path = [blockPath '/C_Caller'];
             outport_path = [blockPath '/Out1'];
@@ -65,11 +87,9 @@ classdef uORB_msg
             if strcmp(get_param(bdroot(blockHandle), 'Lock'), 'off')
                 try
                     % 1. Dynamically map the C Caller to your return-by-value initialization function name
-                    set_param(c_caller_path, 'FunctionName', ['init_' uorb_topic]);
+                    set_param(c_caller_path, 'FunctionName', ['init_' selectedTopic]);
 
                     % 2. CANONICAL R2025b FIX: Map the boolean function argument via Port Specification
-                    % This explicitly forces the 'initialize_to_nan' argument to stay hidden as an internal 
-                    % block parameter instead of drawing an unwanted left-side port arrow on your canvas face.
                     portSpecs = get_param(c_caller_path, 'FunctionPortSpecification');
                     if ~isempty(portSpecs) && ~isempty(portSpecs.InputArguments)
                         portSpecs.InputArguments(1).Scope = 'Parameter';
@@ -87,18 +107,52 @@ classdef uORB_msg
             end
         end
 
+
         function uorb_topic(callbackContext)
-            % Mask parameter callback - updates dropdown choices when user edits topic parameter.
-            %
-            % Called whenever the 'uorb_topic' parameter value changes.
-            % Refreshes the list of available topics from px4API to reflect current PX4 messages.
+            % Mask parameter callback - updates dropdown choices when base topic changes.
             blockHandle = callbackContext.BlockHandle;
             maskObj = Simulink.Mask.get(blockHandle);
-            choices = strsplit(px4API.getTopicDropdownString(), ',');
             
+            % Update base topics dropdown
+            choices = strsplit(px4API.getBaseTopicsDropdownString(), ',');
             paramObj = maskObj.getParameter('uorb_topic');
             if ~isempty(paramObj)
                 paramObj.TypeOptions = choices;
+            end
+
+            % Update variant dropdown based on selected base topic
+            variantParam = maskObj.getParameter('uorb_variant');
+            if ~isempty(variantParam)
+                apiInstance = px4API();
+                uorb_topic = get_param(blockHandle, 'uorb_topic');
+                
+                if isempty(uorb_topic) || strcmp(uorb_topic, '<empty>') || isempty(strtrim(uorb_topic))
+                    variantParam.Visible = 'off';
+                    set_param(blockHandle, 'uorb_variant', '');
+                else
+                    variants = apiInstance.getTopicVariants(uorb_topic);
+                    
+                    % Safe structural check: Ensure variants fallback array is valid
+                    if isempty(variants) || (numel(variants) == 1 && strcmp(variants{1}, '<empty>'))
+                        variants = {uorb_topic};
+                    end
+                    variantParam.TypeOptions = variants;
+                    
+                    % Auto-select first variant or keep current if still valid
+                    currentVariant = get_param(blockHandle, 'uorb_variant');
+                    if isempty(currentVariant) || strcmp(currentVariant, '<empty>') || ~any(strcmp(currentVariant, variants))
+                        set_param(blockHandle, 'uorb_variant', variants{1});
+                    end
+                    
+                    % INTERACTIVE VISIBILITY CONTROL
+                    isSingleRedundantOption = (numel(variants) == 1) && strcmp(variants{1}, uorb_topic);
+                    
+                    if isSingleRedundantOption
+                        variantParam.Visible = 'off'; 
+                    else
+                        variantParam.Visible = 'on';  
+                    end
+                end
             end
         end
     end

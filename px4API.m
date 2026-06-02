@@ -40,7 +40,7 @@ classdef px4API < handle
         % Enable/disable debug output
         % Set to false to suppress initialization messages and progress output
         % Useful when calling px4API() from mask initialization (silent operation)
-        ShowDebug = false
+        ShowDebug = true
     end
 
     properties (Access = private)
@@ -145,6 +145,8 @@ classdef px4API < handle
                 if obj.ShowDebug
                     fprintf('✓ Generated artifacts present and up-to-date; skipping file regeneration. (%s)\n', generationReason);
                 end
+                % Load cache from persistent JSON file if it exists
+                obj.loadOrbCacheFromJson();
             end
         end
 
@@ -221,7 +223,7 @@ classdef px4API < handle
                 topicName = px4API.camelCaseToSnakeCase(camelName);
 
                 try
-                    [~, busObj, ~] = obj.generateBusFromMsg(camelName, topicName, msgFilePath);
+                    [~, busObj, ~, ~, ~] = obj.generateBusFromMsg(camelName, topicName, msgFilePath);
                     if ~isempty(busObj)
                         nativeStructName = [topicName, '_s'];
                         assignin('base', nativeStructName, busObj);
@@ -372,6 +374,57 @@ classdef px4API < handle
             end
         end
 
+        function variants = getTopicVariants(obj, topicName)
+            % Return the set of actual uORB topic IDs for a message base or variant.
+            %
+            % If no TOPICS metadata is present, the returned list is the requested topic name.
+            variants = {topicName};
+            if ~isfield(obj.OrbCache, 'topics')
+                return;
+            end
+
+            if isfield(obj.OrbCache.topics, topicName)
+                entry = obj.OrbCache.topics.(topicName);
+                if isfield(entry, 'variants') && ~isempty(entry.variants)
+                    variants = entry.variants;
+                end
+                return;
+            end
+
+            % If the input is itself a variant name, return all variants of its base message.
+            topicKeys = fieldnames(obj.OrbCache.topics);
+            for i = 1:length(topicKeys)
+                baseName = topicKeys{i};
+                entry = obj.OrbCache.topics.(baseName);
+                if isfield(entry, 'variants') && any(strcmp(entry.variants, topicName))
+                    variants = entry.variants;
+                    return;
+                end
+            end
+        end
+
+        function baseTopic = getBaseTopicForVariant(obj, topicName)
+            % Map a variant topic name back to its base message topic name.
+            baseTopic = topicName;
+            if ~isfield(obj.OrbCache, 'topics')
+                return;
+            end
+
+            if isfield(obj.OrbCache.topics, topicName)
+                return;
+            end
+
+            topicKeys = fieldnames(obj.OrbCache.topics);
+            for i = 1:length(topicKeys)
+                key = topicKeys{i};
+                entry = obj.OrbCache.topics.(key);
+                if isfield(entry, 'variants') && any(strcmp(entry.variants, topicName))
+                    baseTopic = key;
+                    return;
+                end
+            end
+        end
+
         function rebuildOrbCacheFromBuild(obj)
             % Deprecated: Scan PX4 build artifacts for uORB topic headers.
             %
@@ -470,6 +523,34 @@ classdef px4API < handle
             end
         end
 
+        function loadOrbCacheFromJson(obj)
+            % Load ORB cache from persistent JSON file if it exists.
+            %
+            % Called when generated files are up-to-date to restore the in-memory cache
+            % without rebuilding from source messages. This preserves variant metadata
+            % and field information.
+            %
+            % Errors during load are silently ignored; cache remains empty.
+            
+            cachePath = fullfile(obj.LocalGeneratedDir, obj.OrbCacheFile);
+            if ~exist(cachePath, 'file')
+                return;  % No cache file to load
+            end
+            
+            try
+                jsonStr = fileread(cachePath);
+                obj.OrbCache = jsondecode(jsonStr);
+                % Ensure topics field exists even if JSON is empty/malformed
+                if ~isfield(obj.OrbCache, 'topics')
+                    obj.OrbCache.topics = struct();
+                end
+                obj.OrbCacheLoaded = true;
+            catch
+                % Silently ignore cache load errors
+                obj.OrbCache = struct('topics', struct());
+            end
+        end
+
         function generateAllBussesAndHeaders(obj, outputDir)
             % Generate Simulink bus definitions and C++ stub headers for all messages.
             %
@@ -526,7 +607,7 @@ classdef px4API < handle
                 topicName = px4API.camelCaseToSnakeCase(camelName);  % Convert to snake_case
 
                 try
-                    [structString, busObj, deps, fieldMeta] = obj.generateBusFromMsg(camelName, topicName, msgFilePath);
+                    [structString, busObj, deps, fieldMeta, topicVariants] = obj.generateBusFromMsg(camelName, topicName, msgFilePath);
                     if ~isempty(structString)
                         allStructs{end+1, 1} = topicName; %#ok<AGROW>
                         allStructs{end, 2} = structString; %#ok<AGROW>
@@ -536,7 +617,19 @@ classdef px4API < handle
                             busAssignments{end, 2} = busObj; %#ok<AGROW>
                         end
                         
-                        % Populate the persistent JSON cache with field metadata
+                        % Preserve variant metadata and field metadata in the persistent cache.
+                        if isempty(topicVariants)
+                            topicVariants = {topicName};
+                        end
+
+                        existingEntry = struct();
+                        if isfield(obj.OrbCache.topics, topicName)
+                            existingEntry = obj.OrbCache.topics.(topicName);
+                        end
+
+                        % Store variants as cell array of strings
+                        topicEntry = struct();
+                        topicEntry.variants = topicVariants;
                         if ~isempty(fieldMeta) && height(fieldMeta) > 0
                             % Convert field metadata table to JSON-serializable array of structs
                             fieldsArray = {};
@@ -547,11 +640,13 @@ classdef px4API < handle
                                     'arraySize', fieldMeta.arraySize(fIdx) ...
                                 ); %#ok<AGROW>
                             end
-                            
-                            % Store in comprehensive cache, preserving any existing ORB ID
-                            topicEntry = struct('fields', {fieldsArray});
-                            obj.OrbCache.topics.(topicName) = topicEntry;
+                            topicEntry.fields = {fieldsArray};
                         end
+
+                        if isfield(existingEntry, 'orb_id')
+                            topicEntry.orb_id = existingEntry.orb_id;
+                        end
+                        obj.OrbCache.topics.(topicName) = topicEntry;
                     end
                 catch ME
                     if obj.ShowDebug
@@ -696,10 +791,11 @@ classdef px4API < handle
         end
 
 
-        function [structStr, busObj, dependencies, fieldMetadata] = generateBusFromMsg(obj, camelName, topicName, msgFilePath)
+        function [structStr, busObj, dependencies, fieldMetadata, topicVariants] = generateBusFromMsg(obj, camelName, topicName, msgFilePath)
             % Generate Simulink bus structure from PX4 .msg file
             % Returns: structStr (C struct definition), busObj (Simulink bus), dependencies (list of required structs)
             %          fieldMetadata (table of field info: fieldName, fieldType, arraySize)
+            %          topicVariants (cell array of PX4 topic IDs declared by the message)
             % camelName: original CamelCase filename (used to open the file)
             % topicName: snake_case topic name (used for struct naming)
             % msgFilePath: fully-qualified path to the discovered .msg file when scanning subfolders
@@ -740,6 +836,9 @@ classdef px4API < handle
             elements = [];
             structBody = sprintf('struct %s_s {\n', topicName);
             
+            % Track message variant names from PX4 "#TOPICS" metadata (if present)
+            topicVariants = {};
+
             % Initialize arrays to store field metadata
             fieldNames = {};
             fieldTypes = {};
@@ -747,7 +846,15 @@ classdef px4API < handle
 
             for i = 1:length(lines)
                 line = strtrim(lines{i});
-                if isempty(line) || startsWith(line, '#')
+                if startsWith(line, '#')
+                    % Extract topic variants from a TOPICS metadata comment
+                    stripped = regexprep(line, '^#\s*', '');
+                    toks = strsplit(strtrim(stripped));
+                    if ~isempty(toks) && strcmpi(toks{1}, 'TOPICS')
+                        newVariants = toks(2:end);
+                        newVariants = newVariants(~cellfun(@isempty, newVariants));
+                        topicVariants = [topicVariants, newVariants]; %#ok<AGROW>
+                    end
                     continue;
                 end
 
@@ -816,6 +923,11 @@ classdef px4API < handle
                 fieldNames{end+1} = varName; %#ok<AGROW>
                 fieldTypes{end+1} = px4Type; %#ok<AGROW>
                 arraySizes(end+1) = arraySize; %#ok<AGROW>
+            end
+
+            % Normalize topic variants in case multiple #TOPICS lines were present
+            if ~isempty(topicVariants)
+                topicVariants = unique(topicVariants, 'stable');
             end
 
             if ~isempty(elements)
@@ -1062,15 +1174,23 @@ classdef px4API < handle
             % Returning the structure directly by value forces the Simulink C Caller to 
             % recognize the function as a pure output node, removing the dual out_buffer ports.
             for i = 1:length(orbTopics)
-                topicName = orbTopics{i};                
-                cppStr = sprintf('%sstruct %s_s read_%s(void) {\n', cppStr, topicName, topicName);
-                cppStr = sprintf('%s    static int sub_handle = -1;\n', cppStr);
-                cppStr = sprintf('%s    if (sub_handle < 0) { sub_handle = orb_subscribe(ORB_ID(%s)); }\n', cppStr, topicName);
-                cppStr = sprintf('%s    static struct %s_s local_buffer;\n', cppStr, topicName);
-                cppStr = sprintf('%s    bool updated = false;\n', cppStr);
-                cppStr = sprintf('%s    orb_check(sub_handle, &updated);\n', cppStr);
-                cppStr = sprintf('%s    if (updated) { orb_copy(ORB_ID(%s), sub_handle, &local_buffer); }\n', cppStr, topicName);
-                cppStr = sprintf('%s    return local_buffer;\n}\n\n', cppStr);
+                baseTopic = orbTopics{i};
+                variants = obj.getTopicVariants(baseTopic);
+                for v = 1:length(variants)
+                    variantName = variants{v};
+                    cppStr = sprintf('%sstruct %s_s read_%s(void) {\n', cppStr, baseTopic, variantName);
+                    cppStr = sprintf('%s    static int sub_handle = -1;\n', cppStr);
+                    cppStr = sprintf('%s    if (sub_handle < 0) { sub_handle = orb_subscribe(ORB_ID(%s)); }\n', cppStr, variantName);
+                    cppStr = sprintf('%s    static struct %s_s local_buffer;\n', cppStr, baseTopic);
+                    cppStr = sprintf('%s    bool updated = false;\n', cppStr);
+                    cppStr = sprintf('%s    orb_check(sub_handle, &updated);\n', cppStr);
+                    cppStr = sprintf('%s    if (updated) { orb_copy(ORB_ID(%s), sub_handle, &local_buffer); }\n', cppStr, variantName);
+                    cppStr = sprintf('%s    return local_buffer;\n}\n\n', cppStr);
+                end
+                if ~any(strcmp(variants, baseTopic))
+                    cppStr = sprintf('%sstruct %s_s read_%s(void) {\n', cppStr, baseTopic, baseTopic);
+                    cppStr = sprintf('%s    return read_%s();\n}\n\n', cppStr, variants{1});
+                end
             end
 
             % =========================================================================
@@ -1079,12 +1199,20 @@ classdef px4API < handle
             % Accepting the struct copy directly by value natively places a single input port
             % arrow on the left-hand face of the C Caller block without triggering parameter scope leaks.
             for i = 1:length(orbTopics)
-                topicName = orbTopics{i};                
-                cppStr = sprintf('%svoid write_%s(struct %s_s in) {\n', cppStr, topicName, topicName);
-                cppStr = sprintf('%s    static orb_advert_t pub_handle = nullptr;\n', cppStr);
-                cppStr = sprintf('%s    if (pub_handle == nullptr) { pub_handle = orb_advertise(ORB_ID(%s), &in); }\n', cppStr, topicName);
-                cppStr = sprintf('%s    else { orb_publish(ORB_ID(%s), pub_handle, &in); }\n', cppStr, topicName);
-                cppStr = sprintf('%s}\n\n', cppStr);
+                baseTopic = orbTopics{i};
+                variants = obj.getTopicVariants(baseTopic);
+                for v = 1:length(variants)
+                    variantName = variants{v};
+                    cppStr = sprintf('%svoid write_%s(struct %s_s in) {\n', cppStr, variantName, baseTopic);
+                    cppStr = sprintf('%s    static orb_advert_t pub_handle = nullptr;\n', cppStr);
+                    cppStr = sprintf('%s    if (pub_handle == nullptr) { pub_handle = orb_advertise(ORB_ID(%s), &in); }\n', cppStr, variantName);
+                    cppStr = sprintf('%s    else { orb_publish(ORB_ID(%s), pub_handle, &in); }\n', cppStr, variantName);
+                    cppStr = sprintf('%s}\n\n', cppStr);
+                end
+                if ~any(strcmp(variants, baseTopic))
+                    cppStr = sprintf('%svoid write_%s(struct %s_s in) {\n', cppStr, baseTopic, baseTopic);
+                    cppStr = sprintf('%s    write_%s(in);\n}\n\n', cppStr, variants{1});
+                end
             end
 
             % =========================================================================
@@ -1094,42 +1222,50 @@ classdef px4API < handle
             % dynamically across only the verified floating-point fields (float32/float64).
             % Uses cached field metadata from persistent JSON cache.
             for i = 1:length(orbTopics)
-                topicName = orbTopics{i};                
-                cppStr = sprintf('%sstruct %s_s init_%s(bool initialize_to_nan) {\n', cppStr, topicName, topicName);
-                cppStr = sprintf('%s    struct %s_s msg;\n', cppStr, topicName);
-                cppStr = sprintf('%s    memset(&msg, 0, sizeof(msg));\n', cppStr);
-                cppStr = sprintf('%s    if (initialize_to_nan) {\n', cppStr);
-                
-                % Retrieve field metadata from JSON cache
-                fieldMeta = obj.getFieldMetadataFromCache(topicName);
-                
-                % Generate NaN initialization code from cached metadata
-                if ~isempty(fieldMeta) && height(fieldMeta) > 0
-                    % Iterate over all fields in the table
-                    for fieldIdx = 1:height(fieldMeta)
-                        fieldType = fieldMeta.fieldType{fieldIdx};
-                        % Determine if this is a floating-point type (only these need NaN init)
-                        isFloat = strcmp(fieldType, 'float32') || strcmp(fieldType, 'float64');
-                        
-                        if isFloat
-                            fieldName = fieldMeta.fieldName{fieldIdx};
-                            arraySize = fieldMeta.arraySize(fieldIdx);
+                baseTopic = orbTopics{i};
+                variants = obj.getTopicVariants(baseTopic);
+                for v = 1:length(variants)
+                    variantName = variants{v};
+                    cppStr = sprintf('%sstruct %s_s init_%s(bool initialize_to_nan) {\n', cppStr, baseTopic, variantName);
+                    cppStr = sprintf('%s    struct %s_s msg;\n', cppStr, baseTopic);
+                    cppStr = sprintf('%s    memset(&msg, 0, sizeof(msg));\n', cppStr);
+                    cppStr = sprintf('%s    if (initialize_to_nan) {\n', cppStr);
+                    
+                    % Retrieve field metadata from JSON cache
+                    fieldMeta = obj.getFieldMetadataFromCache(baseTopic);
+                    
+                    % Generate NaN initialization code from cached metadata
+                    if ~isempty(fieldMeta) && height(fieldMeta) > 0
+                        % Iterate over all fields in the table
+                        for fieldIdx = 1:height(fieldMeta)
+                            fieldType = fieldMeta.fieldType{fieldIdx};
+                            % Determine if this is a floating-point type (only these need NaN init)
+                            isFloat = strcmp(fieldType, 'float32') || strcmp(fieldType, 'float64');
                             
-                            if arraySize > 1
-                                % Handle array fields by looping the macro assignment
-                                for idx = 0:(arraySize-1)
-                                    cppStr = sprintf('%s        msg.%s[%d] = NAN;\n', cppStr, fieldName, idx);
+                            if isFloat
+                                fieldName = fieldMeta.fieldName{fieldIdx};
+                                arraySize = fieldMeta.arraySize(fieldIdx);
+                                
+                                if arraySize > 1
+                                    % Handle array fields by looping the macro assignment
+                                    for idx = 0:(arraySize-1)
+                                        cppStr = sprintf('%s        msg.%s[%d] = NAN;\n', cppStr, fieldName, idx);
+                                    end
+                                else
+                                    % Single element field assignment
+                                    cppStr = sprintf('%s        msg.%s = NAN;\n', cppStr, fieldName);
                                 end
-                            else
-                                % Single element field assignment
-                                cppStr = sprintf('%s        msg.%s = NAN;\n', cppStr, fieldName);
                             end
                         end
                     end
+                    
+                    cppStr = sprintf('%s    }\n', cppStr);
+                    cppStr = sprintf('%s    return msg;\n}\n\n', cppStr);
                 end
-                
-                cppStr = sprintf('%s    }\n', cppStr);
-                cppStr = sprintf('%s    return msg;\n}\n\n', cppStr);
+                if ~any(strcmp(variants, baseTopic))
+                    cppStr = sprintf('%sstruct %s_s init_%s(bool initialize_to_nan) {\n', cppStr, baseTopic, baseTopic);
+                    cppStr = sprintf('%s    return init_%s(initialize_to_nan);\n}\n\n', cppStr, variants{1});
+                end
             end
 
             % =========================================================================
@@ -1223,6 +1359,48 @@ classdef px4API < handle
             
             snakeName = regexprep(camelName, '([a-z])([A-Z])', '$1_$2');
             snakeName = lower(snakeName);
+        end
+
+        function variants = extractMsgTopicVariants(msgFilePath, defaultTopicName)
+            % Read a .msg file and return its explicit TOPICS definition if present.
+            %
+            % If the file contains a "#TOPICS" line, the returned list is exactly
+            % those topic names. Otherwise, the default topic name is returned.
+            variants = {};
+            if ~exist(msgFilePath, 'file')
+                variants = {defaultTopicName};
+                return;
+            end
+
+            fid = fopen(msgFilePath, 'r');
+            if fid == -1
+                variants = {defaultTopicName};
+                return;
+            end
+
+            fileData = textscan(fid, '%s', 'Delimiter', '\n');
+            fclose(fid);
+            lines = fileData{1};
+
+            for i = 1:length(lines)
+                line = strtrim(lines{i});
+                if ~startsWith(line, '#')
+                    continue;
+                end
+
+                stripped = regexprep(line, '^#\s*', '');
+                toks = strsplit(strtrim(stripped));
+                if ~isempty(toks) && strcmpi(toks{1}, 'TOPICS')
+                    newTopics = toks(2:end);
+                    newTopics = newTopics(~cellfun(@isempty, newTopics));
+                    variants = [variants, newTopics]; %#ok<AGROW>
+                end
+            end
+
+            variants = unique(variants, 'stable');
+            if isempty(variants)
+                variants = {defaultTopicName};
+            end
         end
 
         function [cType, slType] = px4TypeToCTypes(px4Type)
@@ -1392,12 +1570,49 @@ classdef px4API < handle
                 
                 % Skip internal metadata framework tags
                 if strcmp(topicName, 'message_version'), continue; end
-                topics{end+1} = topicName; %#ok<AGROW>
+
+                variants = px4API.extractMsgTopicVariants(fullfile(files(i).folder, files(i).name), topicName);
+                for j = 1:length(variants)
+                    topics{end+1} = variants{j}; %#ok<AGROW>
+                end
             end
 
             % Deduplicate across subfolders and sort alphabetically
             topics = unique(topics(~cellfun(@isempty, topics)));
             listStr = strjoin(topics, ',');
+        end
+
+        function listStr = getBaseTopicsDropdownString()
+            % Generate comma-separated list of UNIQUE base message types (no variants).
+            %
+            % Used by Simulink mask callbacks to populate the PRIMARY topic selector.
+            % Variants are selected separately in a dependent dropdown.
+            %
+            % Output:
+            %   listStr - Comma-separated base topic names (snake_case, alphabetically sorted)
+            
+            api = px4API();
+            msgDir = fullfile(api.PX4Root, 'msg');
+            if ~exist(msgDir, 'dir')
+                error('[px4API:Error] Could not find the mandatory PX4 message root folder directory at: %s', msgDir);
+            end
+
+            files = dir(fullfile(msgDir, '**', '*.msg'));
+            baseTopics = {};
+            for i = 1:length(files)
+                [~, camelName, ~] = fileparts(files(i).name);
+                topicName = px4API.camelCaseToSnakeCase(camelName);
+                
+                % Skip internal metadata framework tags
+                if strcmp(topicName, 'message_version'), continue; end
+
+                % Add only the base topic name, not variants
+                baseTopics{end+1} = topicName; %#ok<AGROW>
+            end
+
+            % Deduplicate across subfolders and sort alphabetically
+            baseTopics = unique(baseTopics(~cellfun(@isempty, baseTopics)));
+            listStr = strjoin(baseTopics, ',');
         end
 
         function runPostCodeGen(buildInfo)
@@ -1413,6 +1628,7 @@ classdef px4API < handle
             apiInstance = px4API();
             apiInstance.exportGeneratedCode(buildInfo);
         end
+
         
         function uorb_topic_callback(callbackContext)
             % Simulink mask callback for uORB topic parameter.

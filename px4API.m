@@ -167,7 +167,7 @@ classdef px4API < handle
             if obj.ShowDebug
                 fprintf('Pre-loading ORB cache from PX4 source...\n');
             end
-            obj.rebuildOrbCacheFromDisk();
+            % obj.rebuildOrbCacheFromDisk();
             
             % Generate busses and stub header/source locally
             obj.generateAllBussesAndHeaders(obj.LocalGeneratedDir);
@@ -332,136 +332,6 @@ classdef px4API < handle
             end
         end
 
-        function orbId = findOrbIdForTopic(obj, snakeName)
-            % Look up the ORB_ID macro value for a uORB topic.
-            %
-            % Caching strategy:
-            %   1. First checks in-memory cache (loads from disk if needed)
-            %   2. Falls back to filesystem search in PX4 source
-            %   3. Stores result in cache and persists to disk
-            %
-            % Input:
-            %   snakeName - Topic name in snake_case (e.g., 'vehicle_attitude')
-            %
-            % Output:
-            %   orbId - ORB_ID value (string), or snakeName as fallback if not found
-            %
-            % Note: This lookup is optimized by pre-building cache in prepareLocalGeneratedArtifacts()
-            
-            orbId = snakeName;  % fallback
-
-            % Lazy-load cache from disk if needed
-            if ~obj.OrbCacheLoaded
-                obj.loadOrbCache();
-            end
-            
-            % Check in-memory cache first
-            if isfield(obj.OrbCache, 'topics') && isfield(obj.OrbCache.topics, snakeName) && ...
-               isfield(obj.OrbCache.topics.(snakeName), 'orb_id')
-                orbId = obj.OrbCache.topics.(snakeName).orb_id;
-                return;
-            end
-
-            % Filesystem fallback: search for uORB/topics/<snakeName>.h
-            findCmd = sprintf('find %s -path "*/uORB/topics/%s.h" -print -quit 2>/dev/null', obj.PX4Root, snakeName);
-            [status, out] = system(findCmd);
-            hdrPath = strtrim(out);
-            if status ~= 0 || isempty(hdrPath)
-                % Second try: search for any file named <snakeName>.h
-                findCmd2 = sprintf('find %s -name "%s.h" -print -quit 2>/dev/null', obj.PX4Root, snakeName);
-                [status2, out2] = system(findCmd2);
-                hdrPath = strtrim(out2);
-                if status2 ~= 0 || isempty(hdrPath)
-                    return;  % Use fallback
-                end
-            end
-
-            % Read header file and extract ORB_DECLARE(...)
-            fid = fopen(hdrPath, 'r');
-            if fid == -1
-                return;
-            end
-            txt = textscan(fid, '%s', 'Delimiter', '\n');
-            fclose(fid);
-            lines = txt{1};
-            
-            for k = 1:length(lines)
-                line = strtrim(lines{k});
-                tokens = regexp(line, 'ORB_DECLARE\(([^)]+)\)', 'tokens', 'once');
-                if ~isempty(tokens)
-                    orbId = strtrim(tokens{1});
-                    % Cache and persist this result
-                    if ~isfield(obj.OrbCache, 'topics')
-                        obj.OrbCache.topics = struct();
-                    end
-                    if ~isfield(obj.OrbCache.topics, snakeName)
-                        obj.OrbCache.topics.(snakeName) = struct();
-                    end
-                    obj.OrbCache.topics.(snakeName).orb_id = orbId;
-                    obj.saveOrbCache();
-                    return;
-                end
-            end
-        end
-
-        function loadOrbCache(obj)
-            % Load comprehensive ORB cache from disk (if present and valid).
-            %
-            % Cache includes:
-            %   - ORB IDs for all topics (extracted from ORB_DECLARE macros)
-            %   - Field metadata (names, types, array sizes) for all topics
-            %
-            % Cache invalidation:
-            %   - Cache is invalidated if any .msg file is newer than the cache file
-            %   - Missing cache is automatically regenerated from source
-            %
-            % Post-load: If cache appears incomplete (< 80% of expected topics),
-            % triggers automatic rebuild from disk.
-            
-            obj.OrbCacheLoaded = true;
-            cachePath = fullfile(obj.LocalGeneratedDir, obj.OrbCacheFile);
-            if ~exist(cachePath, 'file')
-                obj.OrbCache = struct('timestamp', {}, 'topics', struct());
-                return;
-            end
-
-            % Invalidate cache if any msg file is newer than cache file
-            cacheInfo = dir(cachePath);
-            cacheTime = cacheInfo.datenum;
-            msgDir = fullfile(obj.PX4Root, 'msg');
-            if exist(msgDir, 'dir')
-                msgFiles = dir(fullfile(msgDir, '**', '*.msg'));
-                if ~isempty(msgFiles) && max([msgFiles(:).datenum]) > cacheTime
-                    obj.OrbCache = struct('timestamp', {}, 'topics', struct());
-                    return;
-                end
-            end
-
-            try
-                txt = fileread(cachePath);
-                data = jsondecode(txt);
-                % Ensure the structure has required fields
-                if ~isfield(data, 'timestamp'), data.timestamp = ''; end
-                if ~isfield(data, 'topics'), data.topics = struct(); end
-                obj.OrbCache = data;
-            catch
-                obj.OrbCache = struct('timestamp', {}, 'topics', struct());
-            end
-
-            % If the cache looks incomplete, rebuild from source
-            try
-                msgDir = fullfile(obj.PX4Root, 'msg');
-                msgFiles = dir(fullfile(msgDir, '**', '*.msg'));
-                numMsgs = length(msgFiles);
-                cacheTopics = fieldnames(obj.OrbCache.topics);
-                if numMsgs > 0 && length(cacheTopics) < max(10, floor(0.8 * numMsgs))
-                    obj.rebuildOrbCacheFromDisk();
-                end
-            catch
-                % Silently ignore rebuild failures
-            end
-        end
-
         function fieldMetadata = getFieldMetadataFromCache(obj, topicName)
             % Retrieve field metadata for a topic from the persistent JSON cache.
             %
@@ -498,103 +368,6 @@ classdef px4API < handle
                         fieldMetadata = table(fieldNames', fieldTypes', arraySizes', ...
                             'VariableNames', {'fieldName', 'fieldType', 'arraySize'});
                     end
-                end
-            end
-        end
-
-        function rebuildOrbCacheFromDisk(obj)
-            % Scan PX4 source for uORB topic headers and rebuild cache.
-            %
-            % Scan strategy (two-phase):
-            %   1. Primary: src/modules/uORB/topics/ (preferred source)
-            %   2. Secondary: build/*/uORB/topics/ (fallback for built headers)
-            %   3. Fallback: Use topic names if ORB_IDs not found
-            %
-            % Post-rebuild: Saves cache to disk for future lookups.
-            %
-            % Performance note: Executed once per session in prepareLocalGeneratedArtifacts()
-            % Avoids O(N) filesystem searches per topic during code generation.
-            
-            existingTopics = struct();
-            if isfield(obj.OrbCache, 'topics')
-                existingTopics = obj.OrbCache.topics;
-            end
-            obj.OrbCache = struct('topics', existingTopics);
-            
-            % First priority: PX4 source code uORB topics
-            srcTopicsDir = fullfile(obj.PX4Root, 'src', 'modules', 'uORB', 'topics');
-            if exist(srcTopicsDir, 'dir')
-                hdrs = dir(fullfile(srcTopicsDir, '*.h'));
-                for i = 1:length(hdrs)
-                    try
-                        filePath = fullfile(hdrs(i).folder, hdrs(i).name);
-                        txt = fileread(filePath);
-                        tokens = regexp(txt, 'ORB_DECLARE\(([^)]+)\)', 'tokens');
-                        if ~isempty(tokens)
-                            orbId = strtrim(tokens{1}{1});
-                            [~, topicName] = fileparts(hdrs(i).name);
-                            % Store in nested structure, preserving existing fields
-                            if ~isfield(obj.OrbCache.topics, topicName)
-                                obj.OrbCache.topics.(topicName) = struct();
-                            end
-                            obj.OrbCache.topics.(topicName).orb_id = orbId;
-                        end
-                    catch
-                        % Skip files that can't be read
-                    end
-                end
-            end
-            
-            % Second priority: PX4 build artifacts
-            buildTopicsDir = fullfile(obj.PX4Root, 'build', 'px4_sitl_default', 'uORB', 'topics');
-            if exist(buildTopicsDir, 'dir')
-                hdrs = dir(fullfile(buildTopicsDir, '*.h'));
-                for i = 1:length(hdrs)
-                    try
-                        filePath = fullfile(hdrs(i).folder, hdrs(i).name);
-                        txt = fileread(filePath);
-                        tokens = regexp(txt, 'ORB_DECLARE\(([^)]+)\)', 'tokens');
-                        if ~isempty(tokens)
-                            orbId = strtrim(tokens{1}{1});
-                            [~, topicName] = fileparts(hdrs(i).name);
-                            if ~isfield(obj.OrbCache.topics, topicName)
-                                obj.OrbCache.topics.(topicName) = struct();
-                            end
-                            % Only update if not already found in source
-                            if ~isfield(obj.OrbCache.topics.(topicName), 'orb_id')
-                                obj.OrbCache.topics.(topicName).orb_id = orbId;
-                            end
-                        end
-                    catch
-                        % Skip files that can't be read
-                    end
-                end
-            end
-            
-            % Fallback: For any messages without ORB_ID mapping, use topic name
-            msgDir = fullfile(obj.PX4Root, 'msg');
-            if exist(msgDir, 'dir')
-                msgFiles = dir(fullfile(msgDir, '**', '*.msg'));
-                for i = 1:length(msgFiles)
-                    [~, camelName] = fileparts(msgFiles(i).name);
-                    topicName = px4API.camelCaseToSnakeCase(camelName);
-                    % Add fallback ORB ID only if not already present
-                    if ~isfield(obj.OrbCache.topics, topicName)
-                        obj.OrbCache.topics.(topicName) = struct();
-                    end
-                    if ~isfield(obj.OrbCache.topics.(topicName), 'orb_id')
-                        obj.OrbCache.topics.(topicName).orb_id = upper(regexprep(topicName, '_', '_'));
-                    end
-                end
-            end
-            
-            % Persist cache to disk
-            obj.saveOrbCache();
-            if obj.ShowDebug
-                if isfield(obj.OrbCache, 'topics')
-                    fprintf('✓ ORB cache rebuilt with %d topics\\n', length(fieldnames(obj.OrbCache.topics)));
-                else
-                    fprintf('✓ ORB cache rebuilt\\n');
                 end
             end
         end
@@ -661,7 +434,6 @@ classdef px4API < handle
             %     "timestamp": "ISO8601 timestamp",
             %     "topics": {
             %       "topic_name": {
-            %         "orb_id": "ORB_ID_TOPIC_NAME",
             %         "fields": [
             %           {"name": "field1", "type": "float32", "arraySize": 1},
             %           ...
@@ -778,10 +550,6 @@ classdef px4API < handle
                             
                             % Store in comprehensive cache, preserving any existing ORB ID
                             topicEntry = struct('fields', {fieldsArray});
-                            if isfield(obj.OrbCache.topics, topicName) && ...
-                               isfield(obj.OrbCache.topics.(topicName), 'orb_id')
-                                topicEntry.orb_id = obj.OrbCache.topics.(topicName).orb_id;
-                            end
                             obj.OrbCache.topics.(topicName) = topicEntry;
                         end
                     end
@@ -1294,16 +1062,14 @@ classdef px4API < handle
             % Returning the structure directly by value forces the Simulink C Caller to 
             % recognize the function as a pure output node, removing the dual out_buffer ports.
             for i = 1:length(orbTopics)
-                topicName = orbTopics{i};
-                orbId = obj.findOrbIdForTopic(topicName);
-                
+                topicName = orbTopics{i};                
                 cppStr = sprintf('%sstruct %s_s read_%s(void) {\n', cppStr, topicName, topicName);
                 cppStr = sprintf('%s    static int sub_handle = -1;\n', cppStr);
-                cppStr = sprintf('%s    if (sub_handle < 0) { sub_handle = orb_subscribe(ORB_ID(%s)); }\n', cppStr, orbId);
+                cppStr = sprintf('%s    if (sub_handle < 0) { sub_handle = orb_subscribe(ORB_ID(%s)); }\n', cppStr, topicName);
                 cppStr = sprintf('%s    static struct %s_s local_buffer;\n', cppStr, topicName);
                 cppStr = sprintf('%s    bool updated = false;\n', cppStr);
                 cppStr = sprintf('%s    orb_check(sub_handle, &updated);\n', cppStr);
-                cppStr = sprintf('%s    if (updated) { orb_copy(ORB_ID(%s), sub_handle, &local_buffer); }\n', cppStr, orbId);
+                cppStr = sprintf('%s    if (updated) { orb_copy(ORB_ID(%s), sub_handle, &local_buffer); }\n', cppStr, topicName);
                 cppStr = sprintf('%s    return local_buffer;\n}\n\n', cppStr);
             end
 
@@ -1313,13 +1079,11 @@ classdef px4API < handle
             % Accepting the struct copy directly by value natively places a single input port
             % arrow on the left-hand face of the C Caller block without triggering parameter scope leaks.
             for i = 1:length(orbTopics)
-                topicName = orbTopics{i};
-                orbId = obj.findOrbIdForTopic(topicName);
-                
+                topicName = orbTopics{i};                
                 cppStr = sprintf('%svoid write_%s(struct %s_s in) {\n', cppStr, topicName, topicName);
                 cppStr = sprintf('%s    static orb_advert_t pub_handle = nullptr;\n', cppStr);
-                cppStr = sprintf('%s    if (pub_handle == nullptr) { pub_handle = orb_advertise(ORB_ID(%s), &in); }\n', cppStr, orbId);
-                cppStr = sprintf('%s    else { orb_publish(ORB_ID(%s), pub_handle, &in); }\n', cppStr, orbId);
+                cppStr = sprintf('%s    if (pub_handle == nullptr) { pub_handle = orb_advertise(ORB_ID(%s), &in); }\n', cppStr, topicName);
+                cppStr = sprintf('%s    else { orb_publish(ORB_ID(%s), pub_handle, &in); }\n', cppStr, topicName);
                 cppStr = sprintf('%s}\n\n', cppStr);
             end
 
@@ -1330,8 +1094,7 @@ classdef px4API < handle
             % dynamically across only the verified floating-point fields (float32/float64).
             % Uses cached field metadata from persistent JSON cache.
             for i = 1:length(orbTopics)
-                topicName = orbTopics{i};
-                
+                topicName = orbTopics{i};                
                 cppStr = sprintf('%sstruct %s_s init_%s(bool initialize_to_nan) {\n', cppStr, topicName, topicName);
                 cppStr = sprintf('%s    struct %s_s msg;\n', cppStr, topicName);
                 cppStr = sprintf('%s    memset(&msg, 0, sizeof(msg));\n', cppStr);

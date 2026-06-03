@@ -24,46 +24,46 @@ classdef px4API < handle
         % Absolute path to MATLAB project directory containing this file
         % MatlabProjectRoot = fullfile('/', 'mnt', 'nvme0n1p1', 'jack', 'GitHub', 'px4_simulink_io')
         MatlabProjectRoot = fullfile('~', 'GitHub', 'px4_simulink_io')
-        
+
         % Absolute path to PX4 firmware repository root
         PX4Root = fullfile('~', 'PX4', 'v1.17.0-mod')
-        
+
         % Name of target PX4 module (directory in src/modules/)
         PX4ModuleName = 'simulink_io'
-        
+
         % Supported file extensions for export
         AllowedExtensions = {'.cpp', '.h'}
-        
+
         % Local directory for generated artifacts (relative to MatlabProjectRoot)
         LocalGeneratedDir = 'generatedcode'
-        
+
         % Enable/disable debug output
         % Set to false to suppress initialization messages and progress output
         % Useful when calling px4API() from mask initialization (silent operation)
-        ShowDebug = true
+        ShowDebug = false
     end
 
     properties (Access = private)
         % ===== INTERNAL CACHE & STATE =====
         % Resolved path to PX4 generated code directory (PX4Root/src/modules/simulink_io/generated_code)
         ResolvedExternalDir = ''
-        
+
         % Name of the generated stub header file
         StubHeaderName = 'px4_simulink_api.h'
-        
+
         % In-memory cache of uORB topic metadata (JSON-serializable struct)
         OrbCache = struct()
-        
+
         % Flag indicating whether cache has been loaded from disk
         OrbCacheLoaded = false
-        
+
         % Filename for persistent ORB cache (stored in LocalGeneratedDir)
         OrbCacheFile = 'orb_id_cache.json'
     end
 
     methods (Access = private)
         % ========== PRIVATE HELPER METHODS ==========
-        
+
         function resolvedPath = resolveAbsolutePath(~, pathStr)
             % Resolve tilde, relative, and other path formats to absolute paths.
             %
@@ -77,7 +77,7 @@ classdef px4API < handle
             %
             % Output:
             %   resolvedPath - Absolute path string
-            
+
             resolvedPath = pathStr;
             if startsWith(resolvedPath, '~/') || strcmp(resolvedPath, '~')
                 resolvedPath = fullfile(getenv('HOME'), resolvedPath(2:end));
@@ -89,7 +89,7 @@ classdef px4API < handle
 
     methods
         % ========== PUBLIC METHODS ==========
-        
+
         function obj = px4API()
             % Constructor - Initializes px4API and prepares code generation environment.
             %
@@ -101,7 +101,7 @@ classdef px4API < handle
             %
             % The generation is incremental - skipped if generated files are newer than
             % both PX4 messages and generator sources (px4API.m, uORB_*.m).
-            
+
             % Enforce absolute resolution for the user-supplied project root folder
             obj.MatlabProjectRoot = obj.resolveAbsolutePath(obj.MatlabProjectRoot);
 
@@ -127,13 +127,13 @@ classdef px4API < handle
             if obj.ShowDebug
                 fprintf('\n--- [px4API] Initializing & Scanning PX4 Message Directory ---\n');
             end
-            
+
             % ALWAYS regenerate bus objects in workspace (they don't persist across clears)
             if obj.ShowDebug
                 fprintf('Ensuring Simulink bus types are in workspace...\n');
             end
             obj.regenerateBusesInWorkspace();
-            
+
             % Only regenerate files if needed (timestamp-based check)
             [needsGeneration, generationReason] = obj.needsGeneration();
             if needsGeneration
@@ -159,18 +159,18 @@ classdef px4API < handle
             %   3. Generates omnipotent uORB glue code for used topics
             %
             % All artifacts are written to LocalGeneratedDir and ready for export to PX4.
-            
+
             if obj.ShowDebug
                 fprintf('\n--- [px4API] Preparing local generated artifacts in %s ---\n', obj.LocalGeneratedDir);
             end
-            
+
             % Rebuild/populate ORB cache FIRST - must be done before generateOmnipotentCppGlue
             % This pre-populates the cache so that findOrbIdForTopic() calls don't timeout
             if obj.ShowDebug
                 fprintf('Pre-loading ORB cache from PX4 source...\n');
             end
             % obj.rebuildOrbCacheFromDisk();
-            
+
             % Generate busses and stub header/source locally
             obj.generateAllBussesAndHeaders(obj.LocalGeneratedDir);
 
@@ -195,7 +195,7 @@ classdef px4API < handle
             %
             % Errors during bus generation are silently skipped to allow partial
             % regeneration (e.g., if some topics have syntax issues).
-            
+
             msgDir = fullfile(obj.PX4Root, 'msg');
             if ~exist(msgDir, 'dir')
                 if obj.ShowDebug
@@ -215,7 +215,7 @@ classdef px4API < handle
             if obj.ShowDebug
                 fprintf('Generating Simulink bus types from %d message profiles...\n', length(msgFiles));
             end
-            
+
             busCount = 0;
             for i = 1:length(msgFiles)
                 msgFilePath = fullfile(msgFiles(i).folder, msgFiles(i).name);
@@ -243,7 +243,7 @@ classdef px4API < handle
             %
             % Useful for pre-caching topic IDs before code generation,
             % avoiding filesystem scans during later lookups.
-            
+
             if obj.ShowDebug
                 fprintf('--- [px4API] Populating ORB cache into %s ---\n', obj.LocalGeneratedDir);
             end
@@ -267,7 +267,7 @@ classdef px4API < handle
             % Outputs:
             %   needed - Boolean: true if generation is required
             %   reason - String: explanation for the decision
-            
+
             needed = true;
 
             hdrPath = fullfile(obj.LocalGeneratedDir, obj.StubHeaderName);
@@ -349,9 +349,9 @@ classdef px4API < handle
             %   fieldMetadata - Table (empty if topic not in cache)
             %
             % Usage: Used by init_* and generate C code to set NaN on float fields
-            
+
             fieldMetadata = table();
-            
+
             if isfield(obj.OrbCache, 'topics') && isfield(obj.OrbCache.topics, topicName)
                 topicEntry = obj.OrbCache.topics.(topicName);
                 if isfield(topicEntry, 'fields')
@@ -366,7 +366,7 @@ classdef px4API < handle
                         fieldNames = {fieldsArray(:).name};
                         fieldTypes = {fieldsArray(:).type};
                         arraySizes = [fieldsArray(:).arraySize];
-                        
+
                         fieldMetadata = table(fieldNames', fieldTypes', arraySizes', ...
                             'VariableNames', {'fieldName', 'fieldType', 'arraySize'});
                     end
@@ -432,13 +432,13 @@ classdef px4API < handle
             % This method is preserved for backward compatibility.
             %
             % Searches build/*/uORB/topics/ directories for ORB_DECLARE macros.
-            
+
             existingTopics = struct();
             if isfield(obj.OrbCache, 'topics')
                 existingTopics = obj.OrbCache.topics;
             end
             obj.OrbCache = struct('topics', existingTopics);
-            
+
             findCmd = sprintf('find %s -path "*/build/*/uORB/topics/*.h" -print 2>/dev/null', obj.PX4Root);
             [status, out] = system(findCmd);
             if status ~= 0 || isempty(strtrim(out))
@@ -497,7 +497,7 @@ classdef px4API < handle
             %   }
             %
             % Errors during save are silently ignored.
-            
+
             if ~exist(obj.LocalGeneratedDir, 'dir')
                 mkdir(obj.LocalGeneratedDir);
             end
@@ -510,7 +510,7 @@ classdef px4API < handle
                 if ~isfield(obj.OrbCache, 'topics')
                     obj.OrbCache.topics = struct();
                 end
-                
+
                 fid = fopen(cachePath, 'w');
                 if fid ~= -1
                     % Pretty-print JSON for human readability
@@ -531,12 +531,12 @@ classdef px4API < handle
             % and field information.
             %
             % Errors during load are silently ignored; cache remains empty.
-            
+
             cachePath = fullfile(obj.LocalGeneratedDir, obj.OrbCacheFile);
             if ~exist(cachePath, 'file')
                 return;  % No cache file to load
             end
-            
+
             try
                 jsonStr = fileread(cachePath);
                 obj.OrbCache = jsondecode(jsonStr);
@@ -595,12 +595,12 @@ classdef px4API < handle
             % PASS 1: Collect all struct definitions and build comprehensive metadata cache
             allStructs = {};  % Will store {topicName, structStr, dependencies} triplets
             busAssignments = {};  % Will store Simulink bus assignments
-            
+
             % Initialize the comprehensive cache structure
             if ~isfield(obj.OrbCache, 'topics')
                 obj.OrbCache.topics = struct();
             end
-            
+
             for i = 1:length(msgFiles)
                 msgFilePath = fullfile(msgFiles(i).folder, msgFiles(i).name);
                 [~, camelName, ~] = fileparts(msgFiles(i).name);
@@ -616,7 +616,7 @@ classdef px4API < handle
                             busAssignments{end+1, 1} = topicName; %#ok<AGROW>
                             busAssignments{end, 2} = busObj; %#ok<AGROW>
                         end
-                        
+
                         % Preserve variant metadata and field metadata in the persistent cache.
                         if isempty(topicVariants)
                             topicVariants = {topicName};
@@ -659,7 +659,7 @@ classdef px4API < handle
             headerStr = sprintf('// Auto-generated by px4API for strongly-typed Simulink C Caller blocks\n');
             headerStr = sprintf('%s#ifndef PX4_SIMULINK_API_H\n#define PX4_SIMULINK_API_H\n\n', headerStr);
             headerStr = sprintf('%s#include <stdint.h>\n#include <stdbool.h>\n\n', headerStr);
-            
+
             % Forward declare all structs to handle circular dependencies
             if ~isempty(allStructs)
                 headerStr = sprintf('%s// Forward declarations to handle inter-struct dependencies\n', headerStr);
@@ -669,7 +669,7 @@ classdef px4API < handle
                 end
                 headerStr = sprintf('%s\n', headerStr);
             end
-            
+
             % --- TYPE DEFINITION STRATEGY ---
             % For PX4 builds: Use forward declarations only (real headers in implementation files)
             %                Each .cpp file includes only what it needs
@@ -677,7 +677,7 @@ classdef px4API < handle
             headerStr = sprintf('%s\n#if defined(__PX4_LINUX) || defined(__PX4_POSIX) || defined(__PX4_NUTTX)\n', headerStr);
             headerStr = sprintf('%s// PX4 Build: Forward declarations only (implementations include their own headers)\n', headerStr);
             % Note: struct definitions are in #else branch below
-            
+
             headerStr = sprintf('%s#else\n', headerStr);
             headerStr = sprintf('%s// Local Simulation: use generated struct definitions\n\n', headerStr);
 
@@ -689,15 +689,15 @@ classdef px4API < handle
             for i = 1:size(allStructs, 1)
                 headerStr = sprintf('%s%s\n', headerStr, allStructs{i, 2});
             end
-            
+
             headerStr = sprintf('%s\n#endif  // End PX4 vs Local struct definitions\n\n', headerStr);
 
             % Start appending clean, strongly-typed function signatures underneath with C Linkage
             headerStr = sprintf('%s#ifdef __cplusplus\nextern "C" {\n#endif\n\n', headerStr);
             headerStr = sprintf('%s// --- STRONGLY-TYPED RETURN-BY-VALUE PROTOTYPES FOR C CALLER ---\n', headerStr);
-            
+
             srcStr = sprintf('#include "%s"\n\n', obj.StubHeaderName);
-            
+
             % For PX4 builds, implementations are in simulink_io_glue.cpp
             % For local simulation, provide empty stubs
             srcStr = sprintf('%s#if !defined(__PX4_LINUX) && !defined(__PX4_POSIX) && !defined(__PX4_NUTTX)\n', srcStr);
@@ -708,11 +708,11 @@ classdef px4API < handle
             for i = 1:length(msgFiles)
                 [~, camelName, ~] = fileparts(msgFiles(i).name);
                 topicName = px4API.camelCaseToSnakeCase(camelName);  % Convert to snake_case
-                
+
                 % 1. Reader Prototype & Mock Source: Returns full structure layout by value
                 headerStr = sprintf('%sstruct %s_s read_%s(void);\n', headerStr, topicName, topicName);
                 srcStr = sprintf('%sextern "C" struct %s_s read_%s(void) { struct %s_s empty = {0}; return empty; }\n', srcStr, topicName, topicName, topicName);
-                
+
                 % 2. Writer Prototype & Mock Source: Accepts flat structure layout copy by value
                 headerStr = sprintf('%svoid write_%s(struct %s_s in);\n', headerStr, topicName, topicName);
                 srcStr = sprintf('%sextern "C" void write_%s(struct %s_s in) {}\n', srcStr, topicName, topicName);
@@ -725,7 +725,7 @@ classdef px4API < handle
 
             % Append a strongly-typed, zero-input function that returns system time by value
             headerStr = sprintf('%s\n// --- NATIVE HIGH-RESOLUTION SYSTEM CLOCK INTERFACES ---\n', headerStr);
-            headerStr = sprintf('%suint64_t read_px4_system_time(void);\n', headerStr);            
+            headerStr = sprintf('%suint64_t read_px4_system_time(void);\n', headerStr);
             srcStr = sprintf('%sextern "C" uint64_t read_px4_system_time(void) { return 0; }\n', srcStr);
 
             % =========================================================================
@@ -741,7 +741,7 @@ classdef px4API < handle
             srcStr = sprintf('%sextern "C" int32_t read_px4_param_int32(const char* param_name) { return 0; }\n', srcStr);
             srcStr = sprintf('%sextern "C" void write_px4_param_float(const char* param_name, float value) {}\n', srcStr);
             srcStr = sprintf('%sextern "C" void write_px4_param_int32(const char* param_name, int32_t value) {}\n', srcStr);
-            
+
             srcStr = sprintf('%s#endif\n', srcStr);
 
             headerStr = sprintf('%s\n#ifdef __cplusplus\n}\n#endif\n\n#endif // PX4_SIMULINK_API_H\n', headerStr);
@@ -785,11 +785,27 @@ classdef px4API < handle
             if obj.ShowDebug
                 fprintf('--- [px4API] System Ready for Simulink Modelling ---\n\n');
             end
-            
+
             % Persist the comprehensive cache (with both orb_id and field metadata) to JSON
             obj.saveOrbCache();
         end
 
+
+        function typeSize = getPx4FieldTypeSize(~, px4Type)
+            % Match PX4 uORB layout ordering rules for struct packing.
+            switch lower(px4Type)
+                case {'uint64','int64','float64'}
+                    typeSize = 8;
+                case {'uint32','int32','float32'}
+                    typeSize = 4;
+                case {'uint16','int16'}
+                    typeSize = 2;
+                case {'uint8','int8','bool','char'}
+                    typeSize = 1;
+                otherwise
+                    typeSize = 0;
+            end
+        end
 
         function [structStr, busObj, dependencies, fieldMetadata, topicVariants] = generateBusFromMsg(obj, camelName, topicName, msgFilePath)
             % Generate Simulink bus structure from PX4 .msg file
@@ -799,18 +815,18 @@ classdef px4API < handle
             % camelName: original CamelCase filename (used to open the file)
             % topicName: snake_case topic name (used for struct naming)
             % msgFilePath: fully-qualified path to the discovered .msg file when scanning subfolders
-            % 
+            %
             % If called with single argument (legacy), assume input is already camelName
             if nargin == 2
                 topicName = px4API.camelCaseToSnakeCase(camelName);
                 msgFilePath = '';
             end
-            
+
             structStr = '';
             busObj = [];
             dependencies = {};
             fieldMetadata = table();  % Initialize empty table for field metadata
-            
+
             % Open the discovered file path when available; otherwise fall back to a recursive search.
             if nargin < 4 || isempty(msgFilePath)
                 msgFilePath = fullfile(obj.PX4Root, 'msg', [camelName, '.msg']);
@@ -835,7 +851,8 @@ classdef px4API < handle
 
             elements = [];
             structBody = sprintf('struct %s_s {\n', topicName);
-            
+            parsedFields = {};
+
             % Track message variant names from PX4 "#TOPICS" metadata (if present)
             topicVariants = {};
 
@@ -860,12 +877,12 @@ classdef px4API < handle
 
                 commentIdx = strfind(line, '#');
                 if ~isempty(commentIdx)
-                    line = strtrim(line(1:commentIdx(1)-1)); 
+                    line = strtrim(line(1:commentIdx(1)-1));
                 end
 
                 % Filter out static constant lines
                 if contains(line, '=')
-                    continue; 
+                    continue;
                 end
 
                 tokens = strsplit(line);
@@ -885,7 +902,7 @@ classdef px4API < handle
                 if ~isempty(arrayMatch)
                     arraySize = str2double(arrayMatch{1}{1});
                 end
-                
+
                 % Strip array notation from type and name
                 px4Type = regexprep(px4Type, '\[\d+\]', '');
                 varName = regexprep(varName, '\[\d+\]', '');
@@ -906,23 +923,39 @@ classdef px4API < handle
                     end
                 end
 
-                if arraySize > 1
-                    structBody = sprintf('%s    %s %s[%d];\n', structBody, cType, varName, arraySize);
-                else
-                    structBody = sprintf('%s    %s %s;\n', structBody, cType, varName);
-                end
+                parsedFields{end+1} = struct('px4Type', px4Type, 'varName', varName, ...
+                    'arraySize', arraySize, 'cType', cType, 'slType', slType, ...
+                    'isDependency', isDependency, 'depName', depName); %#ok<AGROW>
 
-                elem = Simulink.BusElement;
-                elem.Name = varName;
-                elem.DataType = slType;
-                elem.Dimensions = arraySize;
-                elem.Complexity = 'real';
-                elements = [elements; elem]; %#ok<AGROW>
-                
                 % Capture field metadata for initialization code generation
                 fieldNames{end+1} = varName; %#ok<AGROW>
                 fieldTypes{end+1} = px4Type; %#ok<AGROW>
                 arraySizes(end+1) = arraySize; %#ok<AGROW>
+            end
+
+            % Reorder fields by native PX4 uORB size so the generated layout matches
+            % the runtime topic struct used by orb_copy()/orb_publish().
+            if ~isempty(parsedFields)
+                fieldSizes = cellfun(@(f) obj.getPx4FieldTypeSize(f.px4Type), parsedFields);
+                [~, order] = sort(fieldSizes, 'descend');
+                parsedFields = parsedFields(order);
+            end
+
+            % Emit the struct in the matched layout order.
+            for i = 1:numel(parsedFields)
+                f = parsedFields{i};
+                if f.arraySize > 1
+                    structBody = sprintf('%s    %s %s[%d];\n', structBody, f.cType, f.varName, f.arraySize);
+                else
+                    structBody = sprintf('%s    %s %s;\n', structBody, f.cType, f.varName);
+                end
+
+                elem = Simulink.BusElement;
+                elem.Name = f.varName;
+                elem.DataType = f.slType;
+                elem.Dimensions = f.arraySize;
+                elem.Complexity = 'real';
+                elements = [elements; elem]; %#ok<AGROW>
             end
 
             % Normalize topic variants in case multiple #TOPICS lines were present
@@ -934,14 +967,14 @@ classdef px4API < handle
                 % Preserve the exact lowercase snake_case name of the message file
                 % e.g., topicName = 'vehicle_local_position' -> 'vehicle_local_position_s'
                 nativeStructName = [lower(topicName), '_s'];
-                
+
                 structBody = sprintf('%s};\ntypedef struct %s %s;\n', structBody, nativeStructName, nativeStructName);
                 structStr = structBody;
 
                 % Create bus object (will be assigned to workspace later after all structs defined)
                 busObj = Simulink.Bus;
                 busObj.Elements = elements;
-                
+
                 % Populate field metadata table for caching in JSON
                 fieldMetadata = table(fieldNames', fieldTypes', arraySizes', ...
                     'VariableNames', {'fieldName', 'fieldType', 'arraySize'});
@@ -1015,7 +1048,7 @@ classdef px4API < handle
             count = 0;
             entries = dir(sourceDir);
             extAllowed = cellfun(@lower, obj.AllowedExtensions, 'UniformOutput', false);
-            
+
             for i = 1:length(entries)
                 if entries(i).name(1) == '.'
                     continue;  % skip . and ..
@@ -1031,12 +1064,12 @@ classdef px4API < handle
                 else
                     % Only copy files matching AllowedExtensions property
                     [~, ~, ext] = fileparts(entries(i).name);
-                    
+
                     % Skip px4_simulink_api.cpp for PX4 builds (empty/simulation-only stubs)
                     if strcmp(entries(i).name, 'px4_simulink_api.cpp')
                         continue;
                     end
-                    
+
                     if ismember(lower(ext), extAllowed)
                         copyfile(sourcePath, destPath, 'f');
                         count = count + 1;
@@ -1073,7 +1106,7 @@ classdef px4API < handle
             %   4. #include <parameters/param.h>     <- Avoid C linkage for C++ headers
             %   5. extern "C" { ... }      <- Parameter functions
             %   6. }
-            
+
             if nargin < 2 || isempty(outputDir)
                 outputDir = obj.ResolvedExternalDir;
             end
@@ -1088,26 +1121,26 @@ classdef px4API < handle
                 fid = fopen(testCppPath, 'r');
                 testContent = fread(fid, '*char')';
                 fclose(fid);
-                
+
                 % Find all read_TOPIC() and write_TOPIC() calls, but keep PX4 parameter
                 % helpers out of the uORB topic list.
                 readMatches = regexp(testContent, 'read_(?!px4_param_)(\w+)\s*\(', 'tokens');
                 writeMatches = regexp(testContent, 'write_(?!px4_param_)(\w+)\s*\(', 'tokens');
-                
-                % FIXED MATRICES BLOCK: Force convert both results into linear row cells 
+
+                % FIXED MATRICES BLOCK: Force convert both results into linear row cells
                 % to prevent dimension mismatch crashes regardless of argument contents.
                 readTopicsList = {};
                 if ~isempty(readMatches), readTopicsList = [readMatches{:}]; end
-                
+
                 writeTopicsList = {};
                 if ~isempty(writeMatches), writeTopicsList = [writeMatches{:}]; end
-                
+
                 % Combine the flat arrays horizontally safely
                 allMatches = [readTopicsList, writeTopicsList];
                 if ~isempty(allMatches)
                     requiredTopics = unique(allMatches);
                 end
-                
+
                 if obj.ShowDebug
                     fprintf('  Found %d unique topics used in model\n', length(requiredTopics));
                 end
@@ -1141,12 +1174,12 @@ classdef px4API < handle
             cppStr = sprintf('%s#include <px4_platform_common/log.h>\n#include <uORB/uORB.h>\n', cppStr);
             cppStr = sprintf('%s#include <string.h>\n', cppStr);
             cppStr = sprintf('%s#include "px4_simulink_api.h"\n', cppStr);
-            
+
             % Include hrt header if system time is needed (high-resolution timer)
             if hasSystemTime
                 cppStr = sprintf('%s#include <drivers/drv_hrt.h>\n', cppStr);
             end
-            
+
             % Include real uORB topic headers for glue function implementations
             for i = 1:length(orbTopics)
                 topicName = orbTopics{i};
@@ -1155,7 +1188,7 @@ classdef px4API < handle
 
             % --- THE LINUX LINKER FIXED PASS ---
             % Enforce pure C linkage output rules for ALL generated implementation blocks.
-            % This prevents the C++ compiler from mangling function signatures, which resolves 
+            % This prevents the C++ compiler from mangling function signatures, which resolves
             % the "undefined reference" errors during the final bin/px4 link step.
             cppStr = sprintf('%s\nextern "C" {\n\n', cppStr);
 
@@ -1171,7 +1204,7 @@ classdef px4API < handle
             % =========================================================================
             % 1. RETURN-BY-VALUE READER FUNCTIONS (for required uORB topics only)
             % =========================================================================
-            % Returning the structure directly by value forces the Simulink C Caller to 
+            % Returning the structure directly by value forces the Simulink C Caller to
             % recognize the function as a pure output node, removing the dual out_buffer ports.
             for i = 1:length(orbTopics)
                 baseTopic = orbTopics{i};
@@ -1218,7 +1251,7 @@ classdef px4API < handle
             % =========================================================================
             % 3. DYNAMIC INITIALIZATION FUNCTIONS (for required uORB topics only)
             % =========================================================================
-            % Zeroes out integers/booleans natively and maps the NAN compiler macro 
+            % Zeroes out integers/booleans natively and maps the NAN compiler macro
             % dynamically across only the verified floating-point fields (float32/float64).
             % Uses cached field metadata from persistent JSON cache.
             for i = 1:length(orbTopics)
@@ -1230,10 +1263,10 @@ classdef px4API < handle
                     cppStr = sprintf('%s    struct %s_s msg;\n', cppStr, baseTopic);
                     cppStr = sprintf('%s    memset(&msg, 0, sizeof(msg));\n', cppStr);
                     cppStr = sprintf('%s    if (initialize_to_nan) {\n', cppStr);
-                    
+
                     % Retrieve field metadata from JSON cache
                     fieldMeta = obj.getFieldMetadataFromCache(baseTopic);
-                    
+
                     % Generate NaN initialization code from cached metadata
                     if ~isempty(fieldMeta) && height(fieldMeta) > 0
                         % Iterate over all fields in the table
@@ -1241,11 +1274,11 @@ classdef px4API < handle
                             fieldType = fieldMeta.fieldType{fieldIdx};
                             % Determine if this is a floating-point type (only these need NaN init)
                             isFloat = strcmp(fieldType, 'float32') || strcmp(fieldType, 'float64');
-                            
+
                             if isFloat
                                 fieldName = fieldMeta.fieldName{fieldIdx};
                                 arraySize = fieldMeta.arraySize(fieldIdx);
-                                
+
                                 if arraySize > 1
                                     % Handle array fields by looping the macro assignment
                                     for idx = 0:(arraySize-1)
@@ -1258,7 +1291,7 @@ classdef px4API < handle
                             end
                         end
                     end
-                    
+
                     cppStr = sprintf('%s    }\n', cppStr);
                     cppStr = sprintf('%s    return msg;\n}\n\n', cppStr);
                 end
@@ -1276,7 +1309,7 @@ classdef px4API < handle
             cppStr = sprintf('%s// --- OPTIMIZED CACHED PARAMETER ACCESS LAYER ---\n', cppStr);
             cppStr = sprintf('%s#include <parameters/param.h>\n', cppStr); % Native PX4 parameter system header
             cppStr = sprintf('%s\nextern "C" {\n\n', cppStr); % Reopen C linkage for parameter functions
-            
+
             % RUNTIME VALIDATION FLOAT READER
             cppStr = sprintf('%s__attribute__((used)) float read_px4_param_float(const char* param_name) {\n', cppStr);
             cppStr = sprintf('%s    param_t handle = param_find(param_name);\n', cppStr);
@@ -1317,7 +1350,7 @@ classdef px4API < handle
             cppStr = sprintf('%s            }\n', cppStr);
             cppStr = sprintf('%s        }\n', cppStr);
             cppStr = sprintf('%s    }\n}\n\n', cppStr);
-            
+
             % Close the C Linkage macro bracket block safely
             cppStr = sprintf('%s}\n', cppStr);
 
@@ -1342,7 +1375,7 @@ classdef px4API < handle
     methods (Static)
         % ========== STATIC HELPER METHODS ==========
         % Type conversion, naming utilities, and topological sorting
-        
+
         function snakeName = camelCaseToSnakeCase(camelName)
             % Convert CamelCase file names to snake_case uORB topic names.
             %
@@ -1356,7 +1389,7 @@ classdef px4API < handle
             % Examples:
             %   SensorAirflow -> sensor_airflow
             %   VehicleAttitude -> vehicle_attitude
-            
+
             snakeName = regexprep(camelName, '([a-z])([A-Z])', '$1_$2');
             snakeName = lower(snakeName);
         end
@@ -1415,7 +1448,7 @@ classdef px4API < handle
             % Outputs:
             %   cType - C type string (e.g., 'float', 'int32_t', 'struct vehicle_attitude_s')
             %   slType - Simulink type name (e.g., 'single', 'int32', 'vehicle_attitude_s')
-            
+
             switch px4Type
                 case 'float32', slType = 'single';   cType = 'float';
                 case 'float64', slType = 'double';   cType = 'double';
@@ -1447,10 +1480,10 @@ classdef px4API < handle
             % Outputs:
             %   isDependency - true if this field references another struct
             %   depName - CamelCase name of the referenced struct (if isDependency=true)
-            
+
             isDependency = false;
             depName = '';
-            
+
             switch px4Type
                 case 'float32', slType = 'single';   cType = 'float';
                 case 'float64', slType = 'double';   cType = 'double';
@@ -1482,7 +1515,7 @@ classdef px4API < handle
             % "incomplete type" compilation errors.
             %
             % Input:
-            %   allStructs - Cell array {topicName, structStr, dependencies} 
+            %   allStructs - Cell array {topicName, structStr, dependencies}
             %                where dependencies is a cell array of topic names
             %
             % Output:
@@ -1490,22 +1523,22 @@ classdef px4API < handle
             %                    dependencies appearing before dependents
             %
             % Algorithm: Depth-first traversal with cycle detection
-            
+
             if isempty(allStructs)
                 orderedStructs = {};
                 return;
             end
-            
+
             numStructs = size(allStructs, 1);
             struct_map = containers.Map();  % topicName -> index
             for i = 1:numStructs
                 struct_map(allStructs{i, 1}) = i;
             end
-            
+
             % Track visited nodes for DFS
             visited = false(numStructs, 1);
             orderedStructs = {};
-            
+
             % Depth-first traversal to build dependency order
             for i = 1:numStructs
                 if ~visited(i)
@@ -1520,15 +1553,15 @@ classdef px4API < handle
             %
             % Recursively visits dependency nodes before the current node,
             % ensuring proper ordering for C struct definitions.
-            
+
             if visited(idx)
                 return;
             end
-            
+
             visited(idx) = true;
             topicName = allStructs{idx, 1};
             dependencies = allStructs{idx, 3};
-            
+
             % Visit dependencies first
             for i = 1:length(dependencies)
                 depName = dependencies{i};
@@ -1539,7 +1572,7 @@ classdef px4API < handle
                     end
                 end
             end
-            
+
             % Add current struct after its dependencies
             orderedStructs{end+1, 1} = topicName; %#ok<AGROW>
             orderedStructs{end, 2} = allStructs{idx, 2}; %#ok<AGROW>
@@ -1555,7 +1588,7 @@ classdef px4API < handle
             %   listStr - Comma-separated topic names (snake_case, alphabetically sorted)
             %
             % Note: Creates a temporary px4API instance to scan PX4 messages
-            
+
             api = px4API();
             msgDir = fullfile(api.PX4Root, 'msg');
             if ~exist(msgDir, 'dir')
@@ -1567,7 +1600,7 @@ classdef px4API < handle
             for i = 1:length(files)
                 [~, camelName, ~] = fileparts(files(i).name);
                 topicName = px4API.camelCaseToSnakeCase(camelName);
-                
+
                 % Skip internal metadata framework tags
                 if strcmp(topicName, 'message_version'), continue; end
 
@@ -1590,7 +1623,7 @@ classdef px4API < handle
             %
             % Output:
             %   listStr - Comma-separated base topic names (snake_case, alphabetically sorted)
-            
+
             api = px4API();
             msgDir = fullfile(api.PX4Root, 'msg');
             if ~exist(msgDir, 'dir')
@@ -1602,7 +1635,7 @@ classdef px4API < handle
             for i = 1:length(files)
                 [~, camelName, ~] = fileparts(files(i).name);
                 topicName = px4API.camelCaseToSnakeCase(camelName);
-                
+
                 % Skip internal metadata framework tags
                 if strcmp(topicName, 'message_version'), continue; end
 
@@ -1624,12 +1657,12 @@ classdef px4API < handle
             %
             % Input:
             %   buildInfo - Simulink build info structure (contains model metadata)
-            
+
             apiInstance = px4API();
             apiInstance.exportGeneratedCode(buildInfo);
         end
 
-        
+
         function uorb_topic_callback(callbackContext)
             % Simulink mask callback for uORB topic parameter.
             %
@@ -1638,7 +1671,7 @@ classdef px4API < handle
             %
             % Input:
             %   callbackContext - Simulink mask context (contains BlockHandle)
-            
+
             blockHandle = callbackContext.BlockHandle;
             choices = strsplit(px4API.getTopicDropdownString(), ',');
             set_param(blockHandle, 'TypeOptions_uorb_topic', choices);
@@ -1656,17 +1689,17 @@ classdef px4API < handle
             %
             % Output file: simulink_model_wrapper.h
             % Contains: C++ namespace with generic SimulinkModel class
-            
+
             if isempty(modelName) || ~(ischar(modelName) || isstring(modelName))
                 error('[px4API:Error] modelName must be provided and non-empty');
             end
-            
+
             wrapperStr = sprintf('// Auto-generated model-agnostic wrapper\n');
             wrapperStr = sprintf('%s// Decouples PX4 code from model name to enable model renaming without PX4 changes\n', wrapperStr);
             wrapperStr = sprintf('%s// Model: %s\n', wrapperStr, modelName);
             wrapperStr = sprintf('%s#pragma once\n\n', wrapperStr);
             wrapperStr = sprintf('%s#include "%s.h"\n\n', wrapperStr, modelName);
-            
+
             wrapperStr = sprintf('%snamespace SimulinkWrapper {\n\n', wrapperStr);
             wrapperStr = sprintf('%s// Generic model wrapper (model-name-agnostic interface)\n', wrapperStr);
             wrapperStr = sprintf('%sclass SimulinkModel {\n', wrapperStr);
@@ -1678,12 +1711,12 @@ classdef px4API < handle
             wrapperStr = sprintf('%s    const %s::ExtY_%s_T& getExternalOutputs() { return _model.getExternalOutputs(); }\n', wrapperStr, modelName, modelName);
             wrapperStr = sprintf('%s};\n\n', wrapperStr);
             wrapperStr = sprintf('%s}  // namespace SimulinkWrapper\n', wrapperStr);
-            
+
             % Write wrapper header
             if ~exist(outputDir, 'dir')
                 mkdir(outputDir);
             end
-            
+
             wrapperPath = fullfile(outputDir, 'simulink_model_wrapper.h');
             fid = fopen(wrapperPath, 'w');
             if fid == -1

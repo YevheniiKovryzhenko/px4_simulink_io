@@ -140,47 +140,13 @@ classdef px4API < handle
                 if obj.ShowDebug
                     fprintf('! Regenerating generated artifacts: %s\n', generationReason);
                 end
-                obj.prepareLocalGeneratedArtifacts();
+                obj.generateAllBussesAndHeaders(obj.LocalGeneratedDir);
             else
                 if obj.ShowDebug
                     fprintf('✓ Generated artifacts present and up-to-date; skipping file regeneration. (%s)\n', generationReason);
                 end
                 % Load cache from persistent JSON file if it exists
                 obj.loadOrbCacheFromJson();
-            end
-        end
-
-        function prepareLocalGeneratedArtifacts(obj)
-            % Generate all local artifacts (header, source, glue) into LocalGeneratedDir.
-            %
-            % Orchestrates the complete code generation pipeline:
-            %   1. Rebuilds ORB cache from PX4 source (for efficient topic ID lookups)
-            %   2. Generates Simulink bus definitions and C prototypes
-            %   3. Generates omnipotent uORB glue code for used topics
-            %
-            % All artifacts are written to LocalGeneratedDir and ready for export to PX4.
-
-            if obj.ShowDebug
-                fprintf('\n--- [px4API] Preparing local generated artifacts in %s ---\n', obj.LocalGeneratedDir);
-            end
-
-            % Rebuild/populate ORB cache FIRST - must be done before generateOmnipotentCppGlue
-            % This pre-populates the cache so that findOrbIdForTopic() calls don't timeout
-            if obj.ShowDebug
-                fprintf('Pre-loading ORB cache from PX4 source...\n');
-            end
-            % obj.rebuildOrbCacheFromDisk();
-
-            % Generate busses and stub header/source locally
-            obj.generateAllBussesAndHeaders(obj.LocalGeneratedDir);
-
-            % Generate omnipotent glue locally
-            try
-                obj.generateOmnipotentCppGlue(obj.LocalGeneratedDir);
-            catch ME
-                if obj.ShowDebug
-                    fprintf('! Warning: generateOmnipotentCppGlue failed: %s\n', ME.message);
-                end
             end
         end
 
@@ -272,9 +238,10 @@ classdef px4API < handle
 
             hdrPath = fullfile(obj.LocalGeneratedDir, obj.StubHeaderName);
             srcPath = fullfile(obj.LocalGeneratedDir, 'px4_simulink_api.cpp');
-            gluePath = fullfile(obj.LocalGeneratedDir, 'simulink_io_glue.cpp');
+            % checkPath = fullfile(obj.LocalGeneratedDir, 'simulink_io_glue.cpp');
+            checkPath = fullfile(obj.LocalGeneratedDir, obj.OrbCacheFile);
 
-            if ~(exist(hdrPath, 'file') == 2 && exist(srcPath, 'file') == 2 && exist(gluePath, 'file') == 2)
+            if ~(exist(hdrPath, 'file') == 2 && exist(srcPath, 'file') == 2 && exist(checkPath, 'file') == 2)
                 reason = 'one or more generated files are missing';
                 return;
             end
@@ -296,7 +263,7 @@ classdef px4API < handle
 
             hdrInfo = dir(hdrPath);
             srcInfo = dir(srcPath);
-            glueInfo = dir(gluePath);
+            glueInfo = dir(checkPath);
             hdrTime = hdrInfo.datenum;
             srcTime = srcInfo.datenum;
             glueTime = glueInfo.datenum;
@@ -576,12 +543,18 @@ classdef px4API < handle
             % Scans ALL subdirectories recursively to catch versioned or hidden messages.
             rawMsgFiles = dir(fullfile(msgDir, '**', '*.msg'));
 
+            % Filter out files residing inside the 'px4_msgs_old' directory tree.
+            % We look for both forward and backslashes to ensure it works on Linux/Ubuntu and Windows.
+            excludePattern = [filesep 'px4_msgs_old']; 
+            isOldMessage = contains({rawMsgFiles.folder}, excludePattern);
+            rawMsgFiles(isOldMessage) = []; % Deletes matching stale entries instantly
+
             % Deduplicate by topic name to keep the first matching profile per topic.
             msgFiles = [];
             processedTopics = {};
             for idx = 1:length(rawMsgFiles)
                 [~, camelName, ~] = fileparts(rawMsgFiles(idx).name);
-                topicName = px4API.camelCaseToSnakeCase(camelName);
+                topicName = obj.camelCaseToSnakeCase(camelName);
                 if ~any(strcmp(processedTopics, topicName))
                     processedTopics{end+1} = topicName; %#ok<AGROW>
                     msgFiles = [msgFiles; rawMsgFiles(idx)]; %#ok<AGROW>
@@ -1006,7 +979,7 @@ classdef px4API < handle
             % Enforce presence of the secondary local asset directory if utilized
             if ~exist(obj.LocalGeneratedDir, 'dir')
                 fprintf('! Local generated folder missing, preparing artifacts first...\n');
-                obj.prepareLocalGeneratedArtifacts();
+                obj.generateAllBussesAndHeaders(obj.LocalGeneratedDir);
             end
 
             % Extract model component name natively from buildInfo
@@ -1019,7 +992,7 @@ classdef px4API < handle
             obj.generateModelWrapper(modelName, obj.LocalGeneratedDir);
 
             % Generate the model-specific glue locally from the live Simulink model.
-            obj.generateOmnipotentCppGlue(obj.LocalGeneratedDir);
+            obj.generateOmnipotentCppGlue(obj.LocalGeneratedDir, modelName);
             filesExportedCount = 0;
             filesExportedCount = filesExportedCount + obj.copyGeneratedCodeFiles(obj.LocalGeneratedDir, obj.ResolvedExternalDir, false);
 
@@ -1078,7 +1051,7 @@ classdef px4API < handle
             end
         end
 
-        function generateOmnipotentCppGlue(obj, outputDir)
+        function generateOmnipotentCppGlue(obj, outputDir, modelName)
             % Generate omnipotent uORB routing layer and parameter access functions.
             %
             % This is the second major code generation stage, creating:
@@ -1116,7 +1089,7 @@ classdef px4API < handle
 
             % Step 1: Scan generated model code to find which functions are called
             requiredTopics = {};
-            testCppPath = fullfile(obj.MatlabProjectRoot, 'Test_ert_rtw', 'Test.cpp');
+            testCppPath = fullfile(obj.MatlabProjectRoot, sprintf('%s_ert_rtw', modelName), sprintf('%s.cpp', modelName));
             if isfile(testCppPath)
                 fid = fopen(testCppPath, 'r');
                 testContent = fread(fid, '*char')';
@@ -1141,30 +1114,27 @@ classdef px4API < handle
                     requiredTopics = unique(allMatches);
                 end
 
+                % Separate special non-uORB topics from regular uORB topics
+                hasSystemTime = false;
+                orbTopics = {};
+                for i = 1:length(requiredTopics)
+                    if strcmp(requiredTopics{i}, 'px4_system_time')
+                        hasSystemTime = true;
+                    else
+                        orbTopics{end+1} = requiredTopics{i}; %#ok<AGROW>
+                    end
+                end
+
                 if obj.ShowDebug
                     fprintf('  Found %d unique topics used in model\n', length(requiredTopics));
-                end
+                end                
             else
                 if obj.ShowDebug
-                    fprintf('  Warning: Could not find Test.cpp, generating for all topics\n');
+                    fprintf('  Warning: Could not find Test.cpp, generating for all topics and methods\n');
                 end
-                msgDir = fullfile(obj.PX4Root, 'msg');
-                msgFiles = dir(fullfile(msgDir, '**', '*.msg'));
-                for i = 1:length(msgFiles)
-                    [~, camelName, ~] = fileparts(msgFiles(i).name);
-                    requiredTopics{i} = px4API.camelCaseToSnakeCase(camelName);
-                end
-            end
-
-            % Separate special non-uORB topics from regular uORB topics
-            hasSystemTime = false;
-            orbTopics = {};
-            for i = 1:length(requiredTopics)
-                if strcmp(requiredTopics{i}, 'px4_system_time')
-                    hasSystemTime = true;
-                else
-                    orbTopics{end+1} = requiredTopics{i}; %#ok<AGROW>
-                end
+                % obj.OrbCache.topics %%% We have this instead and should use the cache!
+                orbTopics = fieldnames(obj.OrbCache.topics)';
+                hasSystemTime = true;
             end
 
             % Start building the C++ source file
@@ -1383,16 +1353,20 @@ classdef px4API < handle
             % for internal uORB topic names.
             %
             % Algorithm:
-            %   1. Insert underscore before each uppercase letter
+            %   1. Insert underscore before each uppercase letter when preceded by a letter or digit
             %   2. Convert result to lowercase
             %
             % Examples:
             %   SensorAirflow -> sensor_airflow
             %   VehicleAttitude -> vehicle_attitude
+            %   Ekf2Timestamps -> ekf2_timestamps
 
-            snakeName = regexprep(camelName, '([a-z])([A-Z])', '$1_$2');
+            % FIXED REGEX: ([a-z0-9]) captures digits as well as lowercase letters,
+            % forcing the boundary split to occur cleanly on names containing acronym numbers.
+            snakeName = regexprep(camelName, '([a-z0-9])([A-Z])', '$1_$2');
             snakeName = lower(snakeName);
         end
+
 
         function variants = extractMsgTopicVariants(msgFilePath, defaultTopicName)
             % Read a .msg file and return its explicit TOPICS definition if present.
@@ -1689,17 +1663,36 @@ classdef px4API < handle
             %
             % Output file: simulink_model_wrapper.h
             % Contains: C++ namespace with generic SimulinkModel class
-
+        
             if isempty(modelName) || ~(ischar(modelName) || isstring(modelName))
                 error('[px4API:Error] modelName must be provided and non-empty');
             end
-
+        
+            % --- NEW: Determine if the model has any Inports or Outports ---
+            isModelLoaded = bdIsLoaded(modelName);
+            if ~isModelLoaded
+                load_system(modelName);
+            end
+            
+            % Query both root-level interfaces
+            inports  = find_system(modelName, 'SearchDepth', 1, 'BlockType', 'Inport');
+            outports = find_system(modelName, 'SearchDepth', 1, 'BlockType', 'Outport');
+            
+            hasInputs  = ~isempty(inports);
+            hasOutputs = ~isempty(outports);
+            
+            % Clean up and close the model if we had to load it explicitly
+            if ~isModelLoaded
+                close_system(modelName, 0); 
+            end
+            % --------------------------------------------------------------
+        
             wrapperStr = sprintf('// Auto-generated model-agnostic wrapper\n');
             wrapperStr = sprintf('%s// Decouples PX4 code from model name to enable model renaming without PX4 changes\n', wrapperStr);
             wrapperStr = sprintf('%s// Model: %s\n', wrapperStr, modelName);
             wrapperStr = sprintf('%s#pragma once\n\n', wrapperStr);
             wrapperStr = sprintf('%s#include "%s.h"\n\n', wrapperStr, modelName);
-
+        
             wrapperStr = sprintf('%snamespace SimulinkWrapper {\n\n', wrapperStr);
             wrapperStr = sprintf('%s// Generic model wrapper (model-name-agnostic interface)\n', wrapperStr);
             wrapperStr = sprintf('%sclass SimulinkModel {\n', wrapperStr);
@@ -1708,15 +1701,33 @@ classdef px4API < handle
             wrapperStr = sprintf('%spublic:\n', wrapperStr);
             wrapperStr = sprintf('%s    void initialize() { _model.initialize(); }\n', wrapperStr);
             wrapperStr = sprintf('%s    void step() { _model.step(); }\n', wrapperStr);
-            wrapperStr = sprintf('%s    const %s::ExtY_%s_T& getExternalOutputs() { return _model.getExternalOutputs(); }\n', wrapperStr, modelName, modelName);
+            
+            % --- DYNAMIC HANDLING: Inputs Interface ---
+            if hasInputs
+                % Use a non-const reference wrapper so the PX4 side can feed input data
+                wrapperStr = sprintf('%s    %s::ExtU_%s_T& getExternalInputs() { return _model.getExternalInputs(); }\n', wrapperStr, modelName, modelName);
+            else
+                wrapperStr = sprintf('%s    // Model has no root inputs; returning nullptr fallback\n', wrapperStr);
+                wrapperStr = sprintf('%s    void* getExternalInputs() { return nullptr; }\n', wrapperStr);
+            end
+        
+            % --- DYNAMIC HANDLING: Outputs Interface ---
+            if hasOutputs
+                wrapperStr = sprintf('%s    const %s::ExtY_%s_T& getExternalOutputs() { return _model.getExternalOutputs(); }\n', wrapperStr, modelName, modelName);
+            else
+                wrapperStr = sprintf('%s    // Model has no root outputs; returning nullptr fallback\n', wrapperStr);
+                wrapperStr = sprintf('%s    void* getExternalOutputs() { return nullptr; }\n', wrapperStr);
+            end
+            % -------------------------------------------
+            
             wrapperStr = sprintf('%s};\n\n', wrapperStr);
             wrapperStr = sprintf('%s}  // namespace SimulinkWrapper\n', wrapperStr);
-
+        
             % Write wrapper header
             if ~exist(outputDir, 'dir')
                 mkdir(outputDir);
             end
-
+        
             wrapperPath = fullfile(outputDir, 'simulink_model_wrapper.h');
             fid = fopen(wrapperPath, 'w');
             if fid == -1
@@ -1726,5 +1737,6 @@ classdef px4API < handle
             fclose(fid);
             fprintf('✓ Generated model-agnostic wrapper: simulink_model_wrapper.h (model: %s)\n', modelName);
         end
+
     end
 end

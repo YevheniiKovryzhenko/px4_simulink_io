@@ -22,4 +22,4 @@ generatedcode/
 *.mexa64
 tmwinternal/
 +px4io/+enums/
-+px4io/generatedcode/
++px4io/generated_code/

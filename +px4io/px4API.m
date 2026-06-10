@@ -11,12 +11,6 @@
 %
 % Usage:
 %   api = px4API();          % Initialize (auto-regenerates if needed)
-%   api.populateCacheNow();  % Force cache rebuild from PX4 source
-%
-% Configuration:
-%   - Edit MatlabProjectRoot and PX4Root properties to match your environment
-%   - Artifacts are generated to LocalGeneratedDir (default: 'generatedcode/')
-%   - Copy generated files to PX4: generatedcode/* -> PX4/src/modules/simulink_io/generated_code/
 
 classdef px4API < handle
     properties
@@ -28,10 +22,7 @@ classdef px4API < handle
         PX4ModuleName = 'simulink_io'
 
         % Supported file extensions for export
-        AllowedExtensions = {'.cpp', '.h'}
-
-        % Local directory for generated artifacts (relative to PackageRoot)
-        LocalGeneratedDir = 'generatedcode'
+        AllowedExtensions = {'.cpp', '.h'}        
 
         % Enable/disable debug output
         % Set to false to suppress initialization messages and progress output
@@ -46,8 +37,10 @@ classdef px4API < handle
 
         % Resolved path to PX4 generated code directory (PX4Root/src/modules/simulink_io/generated_code)
         ResolvedExternalDir = ''
-
-        ResolvedEnumsDir = '';
+        
+        % Local directory for generated artifacts
+        LocalGeneratedDir = ''
+        EnumsDir = '';
 
         % Name of the generated stub header file
         StubHeaderName = 'px4_simulink_api.h'
@@ -173,17 +166,17 @@ classdef px4API < handle
             needed = true;
 
             % 1. DEFINE PATH TARGET CONTEXTS RELATIVE TO PACKAGE
-            obj.LocalGeneratedDir = fullfile(obj.PackageRoot, 'generatedcode');
-            obj.ResolvedEnumsDir = fullfile(obj.PackageRoot, '+enums');
+            obj.LocalGeneratedDir = fullfile(obj.PackageRoot, 'generated_code');
+            obj.EnumsDir = fullfile(obj.PackageRoot, '+enums');
 
             % 2. ENFORCE NATIVE SELF-HEALING FOLDER STRUCTURE
             % Ensure physical directories exist. We DO NOT add "+enums" to the MATLAB path.
-            if ~exist(obj.LocalGeneratedDir, 'dir') || ~exist(obj.ResolvedEnumsDir, 'dir')
+            if ~exist(obj.LocalGeneratedDir, 'dir') || ~exist(obj.EnumsDir, 'dir')
                 reason = 'mandatory package directories are missing';
                 
                 % Create missing folder spaces safely without deleting existing ones
                 if ~exist(obj.LocalGeneratedDir, 'dir'), mkdir(obj.LocalGeneratedDir); end
-                if ~exist(obj.ResolvedEnumsDir, 'dir'), mkdir(obj.ResolvedEnumsDir); end
+                if ~exist(obj.EnumsDir, 'dir'), mkdir(obj.EnumsDir); end
                 
                 % Only add the local non-package generated directory to the path if missing
                 if isempty(strfind(path(), obj.LocalGeneratedDir))
@@ -208,7 +201,7 @@ classdef px4API < handle
                 % SAFE PURGE: Erase ONLY the files inside, leaving folder links completely locked
                 % This prevents MATLAB path removal warnings.
                 obj.clearFolderContents(obj.LocalGeneratedDir);
-                obj.clearFolderContents(obj.ResolvedEnumsDir);
+                obj.clearFolderContents(obj.EnumsDir);
                 return;
             end
 
@@ -275,7 +268,7 @@ classdef px4API < handle
                 
                 % Safe incremental pre-clear before regeneration
                 obj.clearFolderContents(obj.LocalGeneratedDir);
-                obj.clearFolderContents(obj.ResolvedEnumsDir);
+                obj.clearFolderContents(obj.EnumsDir);
             end
         end
 

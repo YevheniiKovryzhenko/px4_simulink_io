@@ -1,18 +1,19 @@
-% uORB_read - Mask initialization for uORB topic reader blocks
+% uORB_msg - Mask initialization for uORB message initialization blocks
 %
 % This mask class configures the mask initialization function for a Simulink subsystem
-% that reads (subscribes to) a single uORB topic and outputs its current value.
+% that initializes uORB topic structures with zeros (or NaN for float fields).
 %
 % Block interface:
 %   Parameters:
 %     - uorb_topic (string): PX4 topic name (snake_case, auto-populated dropdown)
 %     - sample_time (string): Simulink sample time (e.g., '-1' for inherited)
+%     - init_value (string): Initialization strategy ('Zero' or 'NaN')
 %
 %   Output port (Out1):
 %     - Type: Bus (named <uorb_topic>_s)
-%     - Output of read_<uorb_topic>() C function
+%     - Output of init_<uorb_topic>() C function
 
-classdef uORB_read
+classdef uORB_msg
     methods(Static)
         % maskInitContext properties available:
         %  - BlockHandle: Handle to the mask (this block)
@@ -20,21 +21,16 @@ classdef uORB_read
         %  - MaskWorkspace: Access to mask parameter values
         
         function MaskInitialization(maskInitContext)
-            % Primary mask initialization function.
-            %
-            % Configures the C Caller block to call read_<uorb_topic>() function.
-            % Sets the output port data type to the corresponding bus structure.
-            % Only applies configuration if model is not locked (allows editing).
-            
-            apiInstance = px4API(); % Enforce constructor validation and sync checks
+            apiInstance = px4io.px4API(); % Enforce constructor validation and sync checks
 
             blockHandle = maskInitContext.BlockHandle;
             maskObj = maskInitContext.MaskObject; % Grab the mask object wrapper
             blockPath = getfullname(blockHandle);
 
-            % Unpack user selection from the active mask parameters table
+            % Unpack user selections from the active mask parameters table
             uorb_topic = get_param(blockHandle, 'uorb_topic');
-            sample_time_val = get_param(blockHandle, 'sample_time');
+            sample_time_val = get_param(blockHandle, 'sample_time'); 
+            init_value = get_param(blockHandle, 'init_value'); 
 
             % Escape gracefully if block is freshly placed and unconfigured
             if isempty(uorb_topic) || strcmp(uorb_topic, '<empty>') || isempty(strtrim(uorb_topic))
@@ -51,7 +47,7 @@ classdef uORB_read
                 variants = apiInstance.getTopicVariants(uorb_topic);
                 
                 % Ensure the underlying list options are configured properly
-                if isempty(variants) || (numel(variants) == 1 && strcmp(variants{1}, '<empty>'))
+                if isempty(variants) || (isscalar(variants) && strcmp(variants{1}, '<empty>'))
                     variants = {uorb_topic};
                 end
                 variantParam.TypeOptions = variants;
@@ -63,7 +59,7 @@ classdef uORB_read
                 end
 
                 % Evaluate structural hidden conditions
-                isSingleRedundantOption = (numel(variants) == 1) && strcmp(variants{1}, uorb_topic);
+                isSingleRedundantOption = (isscalar(variants)) && strcmp(variants{1}, uorb_topic);
                 
                 if isSingleRedundantOption
                     variantParam.Visible = 'off'; % Hide the redundant UI field
@@ -90,15 +86,27 @@ classdef uORB_read
 
             if strcmp(get_param(bdroot(blockHandle), 'Lock'), 'off')
                 try
-                    % Dynamically map the C Caller to the return-by-value function name.
-                    set_param(c_caller_path, 'FunctionName', ['read_' selectedTopic]);
+                    % 1. Dynamically map the C Caller to your return-by-value initialization function name
+                    set_param(c_caller_path, 'FunctionName', ['init_' selectedTopic]);
 
-                    % Explicitly specify the output data type as the bus type.
+                    % 2. CANONICAL R2025b FIX: Map the boolean function argument via Port Specification
+                    portSpecs = get_param(c_caller_path, 'FunctionPortSpecification');
+                    if ~isempty(portSpecs) && ~isempty(portSpecs.InputArguments)
+                        portSpecs.InputArguments(1).Scope = 'Parameter';
+                        if strcmp(init_value, 'NaN')
+                            set_param(c_caller_path, portSpecs.InputArguments(1).Name, 'true');
+                        else
+                            set_param(c_caller_path, portSpecs.InputArguments(1).Name, 'false');
+                        end
+                    end
+
+                    % 3. Explicitly specify the output data type as the bus type
                     set_param(outport_path, 'OutDataTypeStr', ['Bus: ' bus_name]);
                 catch
                 end
             end
         end
+
 
         function uorb_topic(callbackContext)
             % Mask parameter callback - updates dropdown choices when base topic changes.
@@ -106,7 +114,7 @@ classdef uORB_read
             maskObj = Simulink.Mask.get(blockHandle);
             
             % Update base topics dropdown
-            choices = strsplit(px4API.getBaseTopicsDropdownString(), ',');
+            choices = strsplit(px4io.px4API.getBaseTopicsDropdownString(), ',');
             paramObj = maskObj.getParameter('uorb_topic');
             if ~isempty(paramObj)
                 paramObj.TypeOptions = choices;
@@ -115,7 +123,7 @@ classdef uORB_read
             % Update variant dropdown based on selected base topic
             variantParam = maskObj.getParameter('uorb_variant');
             if ~isempty(variantParam)
-                apiInstance = px4API();
+                apiInstance = px4io.px4API();
                 uorb_topic = get_param(blockHandle, 'uorb_topic');
                 
                 if isempty(uorb_topic) || strcmp(uorb_topic, '<empty>') || isempty(strtrim(uorb_topic))
@@ -125,7 +133,7 @@ classdef uORB_read
                     variants = apiInstance.getTopicVariants(uorb_topic);
                     
                     % Safe structural check: Ensure variants fallback array is valid
-                    if isempty(variants) || (numel(variants) == 1 && strcmp(variants{1}, '<empty>'))
+                    if isempty(variants) || (isscalar(variants) && strcmp(variants{1}, '<empty>'))
                         variants = {uorb_topic};
                     end
                     variantParam.TypeOptions = variants;
@@ -137,7 +145,7 @@ classdef uORB_read
                     end
                     
                     % INTERACTIVE VISIBILITY CONTROL
-                    isSingleRedundantOption = (numel(variants) == 1) && strcmp(variants{1}, uorb_topic);
+                    isSingleRedundantOption = (isscalar(variants)) && strcmp(variants{1}, uorb_topic);
                     
                     if isSingleRedundantOption
                         variantParam.Visible = 'off'; 

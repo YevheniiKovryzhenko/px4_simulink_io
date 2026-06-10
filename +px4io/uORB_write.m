@@ -26,7 +26,7 @@ classdef uORB_write
             % Sets the input port data type to the corresponding bus structure.
             % Only applies configuration if model is not locked (allows editing).
             
-            apiInstance = px4API(); % Enforce constructor validation and sync checks
+            apiInstance = px4io.px4API(); % Enforce constructor validation and sync checks
             
             blockHandle = maskInitContext.BlockHandle;
             maskObj = maskInitContext.MaskObject; % Grab the mask object wrapper
@@ -51,7 +51,7 @@ classdef uORB_write
                 variants = apiInstance.getTopicVariants(uorb_topic);
                 
                 % Ensure the underlying list options are configured properly
-                if isempty(variants) || (numel(variants) == 1 && strcmp(variants{1}, '<empty>'))
+                if isempty(variants) || (isscalar(variants) && strcmp(variants{1}, '<empty>'))
                     variants = {uorb_topic};
                 end
                 variantParam.TypeOptions = variants;
@@ -63,7 +63,7 @@ classdef uORB_write
                 end
 
                 % Evaluate structural hidden conditions
-                isSingleRedundantOption = (numel(variants) == 1) && strcmp(variants{1}, uorb_topic);
+                isSingleRedundantOption = (isscalar(variants)) && strcmp(variants{1}, uorb_topic);
                 
                 if isSingleRedundantOption
                     variantParam.Visible = 'off'; % Hide the redundant UI field
@@ -106,7 +106,7 @@ classdef uORB_write
             maskObj = Simulink.Mask.get(blockHandle);
             
             % Update base topics dropdown
-            choices = strsplit(px4API.getBaseTopicsDropdownString(), ',');
+            choices = strsplit(px4io.px4API.getBaseTopicsDropdownString(), ',');
             paramObj = maskObj.getParameter('uorb_topic');
             if ~isempty(paramObj)
                 paramObj.TypeOptions = choices;
@@ -115,7 +115,7 @@ classdef uORB_write
             % Update variant dropdown based on selected base topic
             variantParam = maskObj.getParameter('uorb_variant');
             if ~isempty(variantParam)
-                apiInstance = px4API();
+                apiInstance = px4io.px4API();
                 uorb_topic = get_param(blockHandle, 'uorb_topic');
                 
                 if isempty(uorb_topic) || strcmp(uorb_topic, '<empty>') || isempty(strtrim(uorb_topic))
@@ -125,7 +125,7 @@ classdef uORB_write
                     variants = apiInstance.getTopicVariants(uorb_topic);
                     
                     % Safe structural check: Ensure variants fallback array is valid
-                    if isempty(variants) || (numel(variants) == 1 && strcmp(variants{1}, '<empty>'))
+                    if isempty(variants) || (isscalar(variants) && strcmp(variants{1}, '<empty>'))
                         variants = {uorb_topic};
                     end
                     variantParam.TypeOptions = variants;
@@ -137,7 +137,7 @@ classdef uORB_write
                     end
                     
                     % INTERACTIVE VISIBILITY CONTROL
-                    isSingleRedundantOption = (numel(variants) == 1) && strcmp(variants{1}, uorb_topic);
+                    isSingleRedundantOption = (isscalar(variants)) && strcmp(variants{1}, uorb_topic);
                     
                     if isSingleRedundantOption
                         variantParam.Visible = 'off'; 

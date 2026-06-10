@@ -39,20 +39,20 @@ classdef uORB_time
             % Sets the output port data type to uint64 (high-resolution timer).
             % No configuration parameters needed (no topic selection).
             % Only applies configuration if model is not locked (allows editing).
-            
-            apiInstance = px4API(); % Enforce constructor validation and sync checks
-            
+
+            px4io.px4API(); % Enforce constructor validation and sync checks
+
             blockHandle = maskInitContext.BlockHandle;
             blockPath = getfullname(blockHandle);
-            
+
             sample_time_val = get_param(blockHandle, 'sample_time');
-            
+
             c_caller_path = [blockPath '/C_Caller'];
             outport_path = [blockPath '/Out1'];
 
             set_param(c_caller_path, 'SampleTime', sample_time_val);
             set_param(outport_path, 'SampleTime', sample_time_val);
-            
+
             if strcmp(get_param(bdroot(blockHandle), 'Lock'), 'off')
                 try
                     % Configure the C Caller to call high-resolution timer function.

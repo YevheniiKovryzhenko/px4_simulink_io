@@ -21,3 +21,5 @@ generatedcode/
 *_ert_rtw/
 *.mexa64
 tmwinternal/
++px4io/+enums/
++px4io/generatedcode/

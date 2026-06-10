@@ -1,7 +1,7 @@
-% param_write - Mask initialization for PX4 parameter writer blocks
+% param_read - Mask initialization for PX4 parameter reader blocks
 %
 % This mask class configures the mask initialization function for a Simulink subsystem
-% that writes a PX4 parameter value by name (string).
+% that reads a PX4 parameter value by name (string).
 %
 % Block interface:
 %   Parameters:
@@ -10,42 +10,37 @@
 %     - param_type (string): Parameter data type ('int32', 'float', 'single')
 %
 %   Inputs:
-%     - In1: Parameter value (int32 or single)
 %     - Parameter name (String Constant or From Workspace block)
 %       Connect a string input that provides the parameter name at runtime
 %
+%   Output port (Out1):
+%     - Type: int32 or single (based on param_type)
+%     - Output of read_px4_param_int32() or read_px4_param_float() C function
+%
 % Functionality:
-%   1. Selects appropriate write function based on param_type
-%   2. Configures input port data type (int32 or single)
+%   1. Selects appropriate read function based on param_type
+%   2. Configures output port data type (int32 or single)
 %   3. Parameter name is passed from connected input block
-%   4. Only updates if value has actually changed (optimized)
+%   4. Performs runtime type checking and validation
 %
 % Generated C code:
-%   void write_px4_param_int32(const char* param_name, int32_t value)
-%   void write_px4_param_float(const char* param_name, float value)
+%   int32_t read_px4_param_int32(const char* param_name)
+%   float read_px4_param_float(const char* param_name)
 %     - Looks up parameter by name (param_find)
 %     - Validates parameter type matches
-%     - Reads current value, only calls param_set if changed
-%     - Uses 1e-6f epsilon for float comparisons
-%
-% Optimization:
-%   - Block can be called at fixed rate (e.g., 50 Hz) safely
-%   - Only actually updates PX4 parameter when value changes
-%   - Avoids unnecessary system notifications and syncs
-%   - Reduces computational overhead on PX4
+%     - Returns value or 0/NaN on error
 %
 % Usage:
 %   1. Place block from Simulink library
 %   2. Select parameter type (int32 or float)
-%   3. Connect value input (e.g., slider, constant, calculation)
-%   4. Connect parameter name input (e.g., String Constant)
-%   5. Sample time controls update frequency
-%   6. Use for tuning, parameter sweeps, adaptive control
+%   3. Connect String Constant block to parameter name input
+%   4. Output is the parameter value
+%   5. Use in control loops, tuning, initialization
 %
 % Note: Parameter name must be a valid PX4 parameter.
-% Write fails silently if parameter not found or wrong type.
+% Returns 0 (int32) or NaN (float) if parameter not found or wrong type.
 
-classdef param_write
+classdef param_read
     methods(Static)
         % maskInitContext properties available:
         %  - BlockHandle: Handle to the mask (this block)
@@ -55,43 +50,43 @@ classdef param_write
         function MaskInitialization(maskInitContext)
             % Primary mask initialization function.
             %
-            % Configures C Caller block to use the appropriate parameter write function
-            % (write_px4_param_int32 or write_px4_param_float) based on param_type.
-            % Sets input port data type to match parameter type.
+            % Configures C Caller block to use the appropriate parameter read function
+            % (read_px4_param_int32 or read_px4_param_float) based on param_type.
+            % Sets output port data type to match parameter type.
             
-            px4API();
+            px4io.px4API();
 
             blockHandle = maskInitContext.BlockHandle;
             blockPath = getfullname(blockHandle);
 
             param_name = get_param(blockHandle, 'param_name');
             sample_time_val = get_param(blockHandle, 'sample_time');
-            param_type = param_write.getParamDatatype(blockHandle);
-            param_type = param_write.normalizeParamDatatype(param_type);
+            param_type = px4io.param_read.getParamDatatype(blockHandle);
+            param_type = px4io.param_read.normalizeParamDatatype(param_type);
 
             if isempty(param_name) || strcmp(param_name, '<empty>') || isempty(strtrim(param_name))
                 return;
             end
 
             if strcmp(param_type, 'int32')
-                function_name = 'write_px4_param_int32';
-                in_data_type = 'int32';
+                function_name = 'read_px4_param_int32';
+                out_data_type = 'int32';
             else
-                function_name = 'write_px4_param_float';
-                in_data_type = 'single';
+                function_name = 'read_px4_param_float';
+                out_data_type = 'single';
             end
 
             c_caller_path = [blockPath '/C_Caller'];
-            inport_path = [blockPath '/In1'];
+            outport_path = [blockPath '/Out1'];
 
             set_param(c_caller_path, 'SampleTime', sample_time_val);
-            set_param(inport_path, 'SampleTime', sample_time_val);
+            set_param(outport_path, 'SampleTime', sample_time_val);
 
             if strcmp(get_param(bdroot(blockHandle), 'Lock'), 'off')
                 try
                     set_param(c_caller_path, 'FunctionName', function_name);
 
-                    set_param(inport_path, 'OutDataTypeStr', in_data_type);
+                    set_param(outport_path, 'OutDataTypeStr', out_data_type);
                 catch
                 end
             end
@@ -124,12 +119,8 @@ classdef param_write
             % Normalize parameter data type to canonical form.
             %
             % Converts various data type naming conventions to standard forms:
-            %   - 'float32', 'single' -> 'float' (uses write_px4_param_float)
-            %   - All others -> 'int32' (uses write_px4_param_int32)
-            %
-            % Important: Value change detection uses appropriate comparison:
-            %   - int32: Direct equality check
-            %   - float: Epsilon-based check (1e-6f) to avoid floating-point artifacts
+            %   - 'float32', 'single' -> 'float' (uses read_px4_param_float)
+            %   - All others -> 'int32' (uses read_px4_param_int32)
             %
             % Input:
             %   paramType - Raw parameter type string

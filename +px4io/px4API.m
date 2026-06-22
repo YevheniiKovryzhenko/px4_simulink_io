@@ -998,22 +998,39 @@ classdef px4API < handle
 
             % Generate the model-specific glue locally from the live Simulink model.
             obj.generateOmnipotentCppGlue(obj.LocalGeneratedDir, modelName);
+            
             filesExportedCount = 0;
             filesExportedCount = filesExportedCount + obj.copyGeneratedCodeFiles(obj.LocalGeneratedDir, obj.ResolvedExternalDir, false);
-            
-            % Extract the model name directly from the buildInfo metadata token
-            modelName = buildInfo.ComponentName;
-            
-            % Retrieves a structure containing
-            % the absolute paths to the code generation output targets securely.
+
+            % Copy files from the main top-level model build directory
             buildDirInfo = RTW.getBuildDir(modelName);
-            buildDir = buildDirInfo.BuildDirectory;
+            filesExportedCount = filesExportedCount + obj.copyGeneratedCodeFiles(buildDirInfo.BuildDirectory, obj.ResolvedExternalDir, false);
 
-            % Copy the files Simulink generated for this model into PX4.
-            filesExportedCount = filesExportedCount + obj.copyGeneratedCodeFiles(buildDir, obj.ResolvedExternalDir, false);
+            % Extract and copy files from all referenced sub-models directly via ModelRefs
+            childModels = buildInfo.ModelRefs;
+            
+            % Fetch the absolute path that replaces $(START_DIR)
+            startDirValue = buildInfo.Settings.LocalAnchorDir;
 
+            for i = 1:length(childModels)
+                fprintf('Deploying referenced model files for: %s\n', childModels(i).Name);
+                
+                % Cleanly swap the raw file token with the real absolute path string
+                resolvedSubModelPath = strrep(childModels(i).Path, '$(START_DIR)', startDirValue);
+                
+                % Copy the sub-model's generated C/C++ files
+                filesExportedCount = filesExportedCount + obj.copyGeneratedCodeFiles(resolvedSubModelPath, obj.ResolvedExternalDir, false);
+            end
+
+            % Copy any non-inlinable shared utilities/types if they exist
+            sharedUtilsDir = fullfile(startDirValue, 'slprj', 'ert', '_sharedutils');
+            if exist(sharedUtilsDir, 'dir')
+                fprintf('Deploying critical shared utility headers and types...\n');
+                filesExportedCount = filesExportedCount + obj.copyGeneratedCodeFiles(sharedUtilsDir, obj.ResolvedExternalDir, false);
+            end
             fprintf('Successfully moved %d generated files over to PX4 code tree.\n', filesExportedCount);
         end
+
 
         function count = copyGeneratedCodeFiles(obj, sourceDir, destDir, recursive)
             % Copy generated artifacts from sourceDir into destDir.

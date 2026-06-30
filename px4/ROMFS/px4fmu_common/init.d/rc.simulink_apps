@@ -1,0 +1,28 @@
+#!/bin/sh
+#
+# Standard apps for simulink-deployed code.
+#
+#
+
+
+#
+# Multicopter setup.
+#
+if [ $VEHICLE_TYPE = mc ]
+then
+	land_detector start multicopter
+fi
+
+
+#
+# VTOL setup.
+#
+if [ $VEHICLE_TYPE = vtol ]
+then
+	airspeed_selector start
+	land_detector start vtol
+fi
+
+
+simulink_io start
+simulink_guidance start

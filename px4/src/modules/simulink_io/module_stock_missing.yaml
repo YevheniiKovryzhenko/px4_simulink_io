@@ -1,0 +1,126 @@
+module_name: SIMULINK_IO
+parameters:
+    - group: Missing Parameter Re-Defines
+      definitions:
+          MPC_MANTHR_MIN:
+              description:
+                  short: Minimum collective thrust in Stabilized mode
+                  long: The value is mapped to the lowest throttle stick position in Stabilized mode. Too low collective thrust leads to loss of roll/pitch/yaw torque control authority. Airmode is used to keep torque authority with zero thrust (see MC_AIRMODE).
+              type: float
+              default: 0.08
+              min: 0.0
+              max: 1.0
+              decimal: 2
+              increment: 0.01
+
+          MPC_THR_MIN:
+              description:
+                  short: Minimum collective thrust in climb rate controlled modes
+                  long: Too low thrust leads to loss of roll/pitch/yaw torque control authority. With airmode enabled this parameters can be set to 0 while still keeping torque authority (see MC_AIRMODE).
+              type: float
+              default: 0.12
+              min: 0.05
+              max: 0.5
+              decimal: 2
+              increment: 0.01
+
+          MPC_USE_HTE:
+              description:
+                  short: Use hover thrust estimate for altitude control
+                  long: Disable to use the fixed parameter MPC_THR_HOVER instead of the hover thrust estimate in the position controller. This parameter does not influence Stabilized mode throttle curve (see MPC_THR_CURVE).
+              type: int32
+              default: 1
+              boolean: true
+
+          MPC_THR_HOVER:
+              description:
+                  short: Vertical thrust required to hover
+                  long: Mapped to center throttle stick in Stabilized mode (see MPC_THR_CURVE). Used for initialization of the hover thrust estimator (see MPC_USE_HTE). The estimated hover thrust is used as base for zero vertical acceleration in altitude control. The hover thrust is important for land detection to work correctly.
+              type: float
+              default: 0.5
+              min: 0.1
+              max: 0.8
+              decimal: 2
+              increment: 0.01
+
+          MPC_LAND_SPEED:
+              description:
+                  short: Landing descend rate
+              type: float
+              default: 0.7
+              min: 0.6
+              decimal: 1
+
+          MPC_LAND_CRWL:
+              description:
+                  short: Land crawl descend rate
+                  long: Used below MPC_LAND_ALT3 if distance sensor data is available.
+              type: float
+              default: 0.3
+              min: 0.1
+              decimal: 1
+
+          MPC_ACC_HOR_MAX:
+              description:
+                  short: Maximum horizontal acceleration
+                  long: "MPC_POS_MODE: 1 just deceleration, 4 not used, use MPC_ACC_HOR instead"
+              type: float
+              default: 5.0
+              min: 2.0
+              max: 15.0
+              increment: 1.0
+              decimal: 2
+
+          MPC_JERK_MAX:
+              description:
+                  short: Maximum horizontal and vertical jerk in Position/Altitude mode
+                  long: Limit the maximum jerk (acceleration change) of the vehicle. A lower value leads to smoother motions but limits agility. Setting this to the maximum value essentially disables the limit. Only used with MPC_POS_MODE Acceleration based.
+              type: float
+              default: 8.0
+              min: 0.5
+              max: 500.0
+              decimal: 0
+              increment: 1.0
+
+          MPC_ACC_HOR:
+              description:
+                  short: Acceleration for autonomous and for manual modes
+                  long: When piloting manually, this parameter is only used in MPC_POS_MODE Acceleration based.
+              type: float
+              default: 3.0
+              min: 2.0
+              max: 15.0
+              decimal: 1
+              increment: 1.0
+
+          MPC_JERK_AUTO:
+              description:
+                  short: Jerk limit in autonomous modes
+                  long: Limit the maximum jerk of the vehicle (how fast the acceleration can change). A lower value leads to smoother vehicle motions but also limited agility.
+              type: float
+              default: 4.0
+              min: 1.0
+              max: 80.0
+              decimal: 1
+              increment: 1.0
+
+          MPC_ACC_UP_MAX:
+              description:
+                  short: Maximum upwards acceleration in climb rate controlled modes
+              type: float
+              default: 4.0
+              min: 2.0
+              max: 15.0
+              decimal: 1
+              increment: 1.0
+
+          MPC_ACC_DOWN_MAX:
+              description:
+                  short: Maximum downwards acceleration in climb rate controlled modes
+              type: float
+              default: 3.0
+              min: 2.0
+              max: 15.0
+              decimal: 1
+              increment: 1.0
+

@@ -1,0 +1,10 @@
+#!/bin/sh
+#
+# @name Gazebo s500 lidar down with simulink control system
+#
+# @type Quadrotor
+#
+
+PX4_SIM_MODEL=${PX4_SIM_MODEL:=s500_lidar_down}
+
+. ${R}etc/init.d-posix/airframes/4040_gz_s500_simulink

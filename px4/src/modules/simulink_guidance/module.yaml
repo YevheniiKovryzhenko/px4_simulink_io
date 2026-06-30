@@ -1,0 +1,43 @@
+module_name: SIMULINK_GUIDANCE
+parameters:
+    - group: SIMULINK_GUIDANCE
+      definitions:
+        SMG_EN:
+            description:
+                short: Enable SIMULINK guidance
+                long: |
+                    Enable/Disable SIMULINK guidance update routine.
+
+            type: enum
+            values:
+                0: DISABLE
+                1: ENABLE
+                2: ENABLE_COMPANION
+            default: 0
+
+        SMG_IN_TYPE:
+            description:
+                short: Choose Guidance Input Type
+                long: |
+                    Select the type of uORB message to subscribe to for feeding in
+                    the current state of the vehicle.
+            type: enum
+            values:
+                0: VEHICLE_LOCAL_POSITION
+                1: DEBUG_FLOAT_ARRAY
+            default: 0
+
+        SMG_OUT_TYPE:
+            description:
+                short: Choose Guidance Output Type
+                long: |
+                    Select the type of uORB message to publish data to. Note that
+                    standard px4 messages do not support snap-level inputs.
+                    You can select multiple options simultaneously.
+            type: bitmask
+            bit:
+                0: TRAJECTORY_SETPOINT
+                1: SIM_GUIDANCE_TRAJECTORY
+                2: DEBUG_FLOAT_ARRAY
+            default: 1
+

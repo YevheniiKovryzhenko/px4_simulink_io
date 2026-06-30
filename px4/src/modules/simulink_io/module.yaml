@@ -1,0 +1,562 @@
+module_name: SIMULINK_IO
+parameters:
+    - group: SIMULINK Vehicle Model Shared Parameters
+      definitions:
+          SM_VEH_MASS:
+              description:
+                  short: Total dry vehicle structural mass representation
+              type: float
+              unit: kg
+              default: 1.8050
+              min: 0.0010
+              decimal: 4
+          SM_I_XX:
+              description:
+                  short: Inertia entry Ixx
+              type: float
+              unit: kg m^2
+              default: 0.0196
+              min: 0.0000
+              decimal: 4
+          SM_I_YY:
+              description:
+                  short: Inertia entry Iyy
+              type: float
+              unit: kg m^2
+              default: 0.0196
+              min: 0.0000
+              decimal: 4
+          SM_I_ZZ:
+              description:
+                  short: Inertia entry Izz
+              type: float
+              unit: kg m^2
+              default: 0.0361
+              min: 0.0000
+              decimal: 4
+          SM_I_XY:
+              description:
+                  short: Inertia cross entry Ixy
+              type: float
+              unit: kg m^2
+              default: 0.0000
+              decimal: 4
+          SM_I_XZ:
+              description:
+                  short: Inertia cross entry Ixz
+              type: float
+              unit: kg m^2
+              default: 0.0000
+              decimal: 4
+          SM_I_YZ:
+              description:
+                  short: Inertia cross entry Iyz
+              type: float
+              unit: kg m^2
+              default: 0.0000
+              decimal: 4
+          SM_GD_SW_DELAY:
+              description:
+                  short: Autonomous trajectory state handoff initialization latency delay
+              type: float
+              unit: s
+              default: 10.0000
+              min: 0.0000
+              decimal: 4
+    - group: SIMULINK Guidance Parameters
+      definitions:
+          SM_DF_ALPHA_NOM:
+              description:
+                  short: Nominal angle of attack at cruise 1g trim
+              type: float
+              unit: rad
+              default: 0.0000
+              decimal: 4
+          SM_DF_ALPHA_GAIN:
+              description:
+                  short: Load factor sensitivity feedback scaling gain
+              type: float
+              unit: rad
+              default: 0.1328
+              min: 0.0000
+              decimal: 4
+          SM_DF_VEL_HOVER:
+              description:
+                  short: Characteristic aerodynamic airspeed threshold for hover
+              type: float
+              unit: m/s
+              default: 3.0000
+              min: 0.0000
+              decimal: 4
+          SM_DF_VEL_CRUISE:
+              description:
+                  short: Characteristic aerodynamic airspeed threshold for cruise
+              type: float
+              unit: m/s
+              default: 20.0000
+              min: 0.0000
+              decimal: 4
+          SM_DF_VEL_MID:
+              description:
+                  short: Midpoint transition blending velocity
+              type: float
+              unit: m/s
+              default: 15.0000
+              min: 0.0000
+              decimal: 4
+          SM_DF_RHO_SIGMA:
+              description:
+                  short: Regime smooth transition tracking weighting parameter
+              type: float
+              unit: norm
+              default: 0.6000
+              min: 0.0000
+              max: 1.0000
+              decimal: 4
+          SM_DF_RHO_BOUND:
+              description:
+                  short: Smooth blending factor for hover/cruise spatial boundary tracking
+              type: float
+              unit: norm
+              default: 0.6000
+              min: 0.0000
+              max: 1.0000
+              decimal: 4
+          SM_DF_RHO_STAGE:
+              description:
+                  short: Smooth blending factor for multi-stage allocation handoffs
+              type: float
+              unit: norm
+              default: 0.6000
+              min: 0.0000
+              max: 1.0000
+              decimal: 4
+    - group: SIMULINK Lumped Matrix Aerodynamics
+      definitions:
+          SM_AERO_D_R1_${i}:
+              description:
+                  short: Aerodynamic lumped parameter D system grid tensor matrix (Axis/Index _R1)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [0.0500, 0.0000, 0.0000]
+              decimal: 4
+          SM_AERO_D_R2_${i}:
+              description:
+                  short: Aerodynamic lumped parameter D system grid tensor matrix (Axis/Index _R2)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [0.0000, 0.0500, 0.0000]
+              decimal: 4
+          SM_AERO_D_R3_${i}:
+              description:
+                  short: Aerodynamic lumped parameter D system grid tensor matrix (Axis/Index _R3)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [0.0000, 0.0000, 0.1000]
+              decimal: 4
+          SM_AERO_A_R1_${i}:
+              description:
+                  short: Aerodynamic lumped parameter A system grid tensor matrix (Axis/Index _R1)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [0.0000, 0.0000, 0.0000]
+              decimal: 4
+          SM_AERO_A_R2_${i}:
+              description:
+                  short: Aerodynamic lumped parameter A system grid tensor matrix (Axis/Index _R2)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [0.0000, 0.0000, 0.0000]
+              decimal: 4
+          SM_AERO_A_R3_${i}:
+              description:
+                  short: Aerodynamic lumped parameter A system grid tensor matrix (Axis/Index _R3)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [0.0000, 0.0000, 0.0000]
+              decimal: 4
+          SM_AERO_B_R1_${i}:
+              description:
+                  short: Aerodynamic lumped parameter B system grid tensor matrix (Axis/Index _R1)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [0.0050, 0.0000, 0.0000]
+              decimal: 4
+          SM_AERO_B_R2_${i}:
+              description:
+                  short: Aerodynamic lumped parameter B system grid tensor matrix (Axis/Index _R2)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [0.0000, 0.0050, 0.0000]
+              decimal: 4
+          SM_AERO_B_R3_${i}:
+              description:
+                  short: Aerodynamic lumped parameter B system grid tensor matrix (Axis/Index _R3)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [0.0000, 0.0000, 0.0050]
+              decimal: 4
+    - group: SIMULINK Stick Mapping Boundaries
+      definitions:
+          SM_STK_VELXY_MAX:
+              description:
+                  short: Max horizontal velocity reference request from stick
+              type: float
+              unit: m/s
+              default: 3.0000
+              min: 0.0000
+              decimal: 4
+          SM_STK_VEL_Z_MAX:
+              description:
+                  short: Max vertical velocity reference request from stick
+              type: float
+              unit: m/s
+              default: 1.0000
+              min: 0.0000
+              decimal: 4
+          SM_STK_ATT_MAX_${i}:
+              description:
+                  short: Max roll pitch and yaw orientation bounding request from sticks
+              type: float
+              unit: rad
+              num_instances: 3
+              instance_start: 1
+              default: [1.0472, 1.0472, 0.0000]
+              decimal: 4
+          SM_STK_RATE_MAX${i}:
+              description:
+                  short: Max roll pitch and yaw rate bounding request from sticks
+              type: float
+              unit: rad/s
+              num_instances: 3
+              instance_start: 1
+              default: [0.0000, 0.0000, 0.5236]
+              decimal: 4
+          SM_STK_THR_MAX:
+              description:
+                  short: Max manual normalized aggregate thrust command limits
+              type: float
+              unit: norm
+              default: 1.0000
+              min: 0.0000
+              max: 1.0000
+              decimal: 4
+          SM_STK_MOM_MAX${i}:
+              description:
+                  short: Max physical body moments allocated via stick override steps
+              type: float
+              unit: Nm
+              num_instances: 3
+              instance_start: 1
+              default: [1.9613, 1.9613, 0.9807]
+              decimal: 4
+    - group: Simulink Multirotor Control
+      definitions:
+          SM_M_POS_KP_R1_${i}:
+              description:
+                  short: Multirotor position proportional feedback gain matrix (Axis/Index _R1)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [3.0000, 0.0000, 0.0000]
+              decimal: 4
+          SM_M_POS_KP_R2_${i}:
+              description:
+                  short: Multirotor position proportional feedback gain matrix (Axis/Index _R2)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [0.0000, 3.0000, 0.0000]
+              decimal: 4
+          SM_M_POS_KP_R3_${i}:
+              description:
+                  short: Multirotor position proportional feedback gain matrix (Axis/Index _R3)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [0.0000, 0.0000, 1.7000]
+              decimal: 4
+          SM_M_VEL_KP_R1_${i}:
+              description:
+                  short: Multirotor velocity proportional feedback gain matrix (Axis/Index _R1)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [8.0000, 0.0000, 0.0000]
+              decimal: 4
+          SM_M_VEL_KP_R2_${i}:
+              description:
+                  short: Multirotor velocity proportional feedback gain matrix (Axis/Index _R2)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [0.0000, 8.0000, 0.0000]
+              decimal: 4
+          SM_M_VEL_KP_R3_${i}:
+              description:
+                  short: Multirotor velocity proportional feedback gain matrix (Axis/Index _R3)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [0.0000, 0.0000, 12.0000]
+              decimal: 4
+          SM_M_VEL_KI_R1_${i}:
+              description:
+                  short: Multirotor velocity error integral tracker feedback loop matrix (Axis/Index _R1)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [2.0000, 0.0000, 0.0000]
+              decimal: 4
+          SM_M_VEL_KI_R2_${i}:
+              description:
+                  short: Multirotor velocity error integral tracker feedback loop matrix (Axis/Index _R2)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [0.0000, 2.0000, 0.0000]
+              decimal: 4
+          SM_M_VEL_KI_R3_${i}:
+              description:
+                  short: Multirotor velocity error integral tracker feedback loop matrix (Axis/Index _R3)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [0.0000, 0.0000, 2.0000]
+              decimal: 4
+          SM_M_VEL_KD_R1_${i}:
+              description:
+                  short: Multirotor velocity error tracking derivative feedback gain matrix (Axis/Index _R1)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [1.5000, 0.0000, 0.0000]
+              decimal: 4
+          SM_M_VEL_KD_R2_${i}:
+              description:
+                  short: Multirotor velocity error tracking derivative feedback gain matrix (Axis/Index _R2)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [0.0000, 1.5000, 0.0000]
+              decimal: 4
+          SM_M_VEL_KD_R3_${i}:
+              description:
+                  short: Multirotor velocity error tracking derivative feedback gain matrix (Axis/Index _R3)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [0.0000, 0.0000, 2.0000]
+              decimal: 4
+          SM_M_ERR_POS_XY:
+              description:
+                  short: Maximum allowed horizontal position tracking spatial error deviation magnitude
+              type: float
+              unit: m
+              default: 2.0000
+              decimal: 4
+          SM_M_ERR_POS_Z:
+              description:
+                  short: Maximum allowed vertical position error tracking limit band
+              type: float
+              unit: m
+              default: 2.0000
+              decimal: 4
+          SM_M_SPD_XY_MAX:
+              description:
+                  short: Maximum targeted horizontal velocity profile envelope
+              type: float
+              unit: m/s
+              default: 5.0000
+              decimal: 4
+          SM_M_SPD_Z_LIM${i}:
+              description:
+                  short: Minimum and Maximum targeted vertical speed profile bounds
+              type: float
+              unit: m/s
+              num_instances: 2
+              instance_start: 1
+              default: [-3.0000, 3.0000]
+              decimal: 4
+          SM_M_ERR_VEL_XY:
+              description:
+                  short: Maximum horizontal speed profile tracking deviation error saturation limit
+              type: float
+              unit: m/s
+              default: 3.0000
+              decimal: 4
+          SM_M_ERR_VEL_Z:
+              description:
+                  short: Maximum vertical descent/climb speed profile tracking deviation error saturation limit
+              type: float
+              unit: m/s
+              default: 3.0000
+              decimal: 4
+          SM_M_ERR_ACC_XY:
+              description:
+                  short: Maximum horizontal kinematic dynamic acceleration trajectory error buffer bound
+              type: float
+              unit: m/s^2
+              default: 3.0000
+              decimal: 4
+          SM_M_ERR_ACC_Z:
+              description:
+                  short: Maximum vertical kinematic dynamic acceleration error saturation threshold envelope
+              type: float
+              unit: m/s^2
+              default: 2.0000
+              decimal: 4
+          SM_M_ACC_MAX_G:
+              description:
+                  short: Max total translation acceleration saturation limits specified in multiples of standard gravity
+              type: float
+              unit: norm
+              default: 2.5000
+              decimal: 4
+          SM_M_ACC_MIN_G:
+              description:
+                  short: Min collective vertical upward thrust floor buffer scaling specified in multiples of gravity
+              type: float
+              unit: norm
+              default: 0.1000
+              decimal: 4
+          SM_M_TILT_MAX:
+              description:
+                  short: Absolute hard maximum multirotor roll/pitch airframe tilt vector angle boundary
+              type: float
+              unit: rad
+              default: 0.5236
+              decimal: 4
+          SM_M_ATT_KP_R1_${i}:
+              description:
+                  short: Multirotor core orientation quaternion tracking proportional control loop feedback matrix (Axis/Index _R1)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [3.0000, 0.0000, 0.0000]
+              decimal: 4
+          SM_M_ATT_KP_R2_${i}:
+              description:
+                  short: Multirotor core orientation quaternion tracking proportional control loop feedback matrix (Axis/Index _R2)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [0.0000, 3.0000, 0.0000]
+              decimal: 4
+          SM_M_ATT_KP_R3_${i}:
+              description:
+                  short: Multirotor core orientation quaternion tracking proportional control loop feedback matrix (Axis/Index _R3)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [0.0000, 0.0000, 0.3000]
+              decimal: 4
+          SM_M_RAT_KP_R1_${i}:
+              description:
+                  short: Multirotor body axis angular velocity rate proportional control feedback matrix (Axis/Index _R1)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [1.1000, 0.0000, 0.0000]
+              decimal: 4
+          SM_M_RAT_KP_R2_${i}:
+              description:
+                  short: Multirotor body axis angular velocity rate proportional control feedback matrix (Axis/Index _R2)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [0.0000, 1.1000, 0.0000]
+              decimal: 4
+          SM_M_RAT_KP_R3_${i}:
+              description:
+                  short: Multirotor body axis angular velocity rate proportional control feedback matrix (Axis/Index _R3)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [0.0000, 0.0000, 0.0900]
+              decimal: 4
+          SM_M_RAT_KI_R1_${i}:
+              description:
+                  short: Multirotor body axis rates error integral state tracker feedback scaling gain matrix (Axis/Index _R1)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [0.0100, 0.0000, 0.0000]
+              decimal: 4
+          SM_M_RAT_KI_R2_${i}:
+              description:
+                  short: Multirotor body axis rates error integral state tracker feedback scaling gain matrix (Axis/Index _R2)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [0.0000, 0.0100, 0.0000]
+              decimal: 4
+          SM_M_RAT_KI_R3_${i}:
+              description:
+                  short: Multirotor body axis rates error integral state tracker feedback scaling gain matrix (Axis/Index _R3)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [0.0000, 0.0000, 0.0100]
+              decimal: 4
+          SM_M_ACC_KP_R1_${i}:
+              description:
+                  short: Multirotor cross coupling angular target acceleration loop proportional scaling gain matrix (Axis/Index _R1)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [0.1000, 0.0000, 0.0000]
+              decimal: 4
+          SM_M_ACC_KP_R2_${i}:
+              description:
+                  short: Multirotor cross coupling angular target acceleration loop proportional scaling gain matrix (Axis/Index _R2)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [0.0000, 0.1000, 0.0000]
+              decimal: 4
+          SM_M_ACC_KP_R3_${i}:
+              description:
+                  short: Multirotor cross coupling angular target acceleration loop proportional scaling gain matrix (Axis/Index _R3)
+              type: float
+              num_instances: 3
+              instance_start: 1
+              default: [0.0000, 0.0000, 0.0010]
+              decimal: 4
+          SM_M_ERR_ATT_LIM:
+              description:
+                  short: Maximum rotation tracking deviation angle error envelope saturation limit before gain processing
+              type: float
+              unit: rad
+              default: 0.2618
+              decimal: 4
+          SM_M_ERR_RAT_LIM:
+              description:
+                  short: Maximum cross-axis angular velocity tracking rate error buffer saturation cap limits
+              type: float
+              unit: rad/s
+              default: 0.3491
+              decimal: 4
+          SM_M_ERR_AAC_LIM:
+              description:
+                  short: Maximum angular reference tracking frame acceleration path deviation error saturation threshold bounds
+              type: float
+              unit: rad/s^2
+              default: 0.5236
+              decimal: 4
+          SM_M_RAT_REF_MAX:
+              description:
+                  short: Absolute hard maximum target body rate setpoint magnitude commanded via inner stability loops
+              type: float
+              unit: rad/s
+              default: 6.2832
+              decimal: 4

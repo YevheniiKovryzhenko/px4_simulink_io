@@ -1,0 +1,12 @@
+menuconfig MODULES_SIMULINK_GUIDANCE
+	bool "simulink_guidance"
+	default n
+	---help---
+		Enable support for simulink_guidance
+
+menuconfig USER_SIMULINK_GUIDANCE
+	bool "simulink_guidance running as userspace module"
+	default n
+	depends on BOARD_PROTECTED && MODULES_SIMULINK_GUIDANCE
+	---help---
+		Put simulink_guidance in userspace memory

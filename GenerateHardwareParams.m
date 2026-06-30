@@ -13,10 +13,10 @@ function generate_params_json(Parameters)
     
     % Vehicle Mass
     group_shared.add(px4io.parameter.float(Parameters.Vehicle.Shared.Mass) ...
-        .set_name("SM_VEH_MASS") ...
-        .set_description("Total dry vehicle structural mass representation") ...
+        .set_name("SM_MASS") ...
+        .set_description("Vehicle mass") ...
         .set_unit(px4io.parameter.unit.KG) ...
-        .set_min(0.001)); % Must be strictly positive
+        .set_min(0.0)); % Must be strictly positive
     
     % Inertia Tensor matrix flattened to scalar components due to symmetry
     I = Parameters.Vehicle.Shared.InertiaTensor;
@@ -26,18 +26,18 @@ function generate_params_json(Parameters)
     group_shared.add(px4io.parameter.float(I(1,2)).set_name("SM_I_XY").set_unit(px4io.parameter.unit.KG_M2).set_description("Inertia cross entry Ixy"));
     group_shared.add(px4io.parameter.float(I(1,3)).set_name("SM_I_XZ").set_unit(px4io.parameter.unit.KG_M2).set_description("Inertia cross entry Ixz"));
     group_shared.add(px4io.parameter.float(I(2,3)).set_name("SM_I_YZ").set_unit(px4io.parameter.unit.KG_M2).set_description("Inertia cross entry Iyz"));
-    
-    % Guidance Delayed Handoff
-    group_shared.add(px4io.parameter.float(Parameters.Vehicle.Guidance.AutonomusSwitchingDelay) ...
-        .set_name("SM_GD_SW_DELAY") ...
-        .set_description("Autonomous trajectory state handoff initialization latency delay") ...
-        .set_unit(px4io.parameter.unit.S) ...
-        .set_min(0.0));
         
     master_module.add_group(group_shared);
 
     % GROUP 2: SIMULINK Fixed-Wing Guidance & Differential Flatness
     group_guidance = px4io.parameter.group("SIMULINK Guidance Parameters");
+
+    % Guidance Delayed Handoff
+    group_guidance.add(px4io.parameter.float(Parameters.Vehicle.Guidance.AutonomusSwitchingDelay) ...
+        .set_name("SM_GD_SW_DELAY") ...
+        .set_description("Autonomous trajectory state handoff initialization latency delay") ...
+        .set_unit(px4io.parameter.unit.S) ...
+        .set_min(0.0));
     
     df = Parameters.Vehicle.Guidance.DifferentialFlatness;
     group_guidance.add(px4io.parameter.float(df.AlphaNominal).set_name("SM_DF_ALPHA_NOM").set_unit(px4io.parameter.unit.RAD).set_description("Nominal angle of attack at cruise 1g trim"));
@@ -67,7 +67,7 @@ function generate_params_json(Parameters)
     stk = Parameters.Vehicle.ControlSystem.Sticks;
     group_sticks.add(px4io.parameter.float(stk.VelocityHorizonal).set_name("SM_STK_VELXY_MAX").set_unit(px4io.parameter.unit.M_S).set_description("Max horizontal velocity reference request from stick").set_min(0.0));
     group_sticks.add(px4io.parameter.float(stk.VelocityVertical).set_name("SM_STK_VEL_Z_MAX").set_unit(px4io.parameter.unit.M_S).set_description("Max vertical velocity reference request from stick").set_min(0.0));
-    group_sticks.add(px4io.parameter.float(stk.Attitude).set_name("SM_STK_ATT_MAX_").set_instances(3,1).set_unit(px4io.parameter.unit.RAD).set_description("Max roll pitch and yaw orientation bounding request from sticks"));
+    group_sticks.add(px4io.parameter.float(stk.Attitude).set_name("SM_STK_ATT_MAX").set_instances(3,1).set_unit(px4io.parameter.unit.RAD).set_description("Max roll pitch and yaw orientation bounding request from sticks"));
     group_sticks.add(px4io.parameter.float(stk.AngularRate).set_name("SM_STK_RATE_MAX").set_instances(3,1).set_unit(px4io.parameter.unit.RAD_S).set_description("Max roll pitch and yaw rate bounding request from sticks"));
     group_sticks.add(px4io.parameter.float(stk.Thrust).set_name("SM_STK_THR_MAX").set_unit(px4io.parameter.unit.NORM).set_description("Max manual normalized aggregate thrust command limits").set_min(0.0).set_max(1.0));
     group_sticks.add(px4io.parameter.float(stk.Moment).set_name("SM_STK_MOM_MAX").set_instances(3,1).set_unit(px4io.parameter.unit.NM).set_description("Max physical body moments allocated via stick override steps"));
@@ -103,7 +103,7 @@ function generate_params_json(Parameters)
         group_mc_ctrl.add(px4io.parameter.float(mc_p.MaxTotalAcceleration).set_name("SM_M_ACC_MAX_G").set_unit(px4io.parameter.unit.NORM).set_description("Max total translation acceleration saturation limits specified in multiples of standard gravity"));
     
         group_mc_ctrl.add(px4io.parameter.float(mc_p.MinThrustAcceleration).set_name("SM_M_ACC_MIN_G").set_unit(px4io.parameter.unit.NORM).set_description("Min collective vertical upward thrust floor buffer scaling specified in multiples of gravity"));
-        group_mc_ctrl.add(px4io.parameter.float(mc_p.MaxBodyTiltAngle).set_name("SM_M_TILT_MAX").set_unit(px4io.parameter.unit.RAD).set_description("Absolute hard maximum multirotor roll/pitch airframe tilt vector angle boundary"));
+        group_mc_ctrl.add(px4io.parameter.float(rad2deg(mc_p.MaxBodyTiltAngle)).set_name("SM_M_TILT_MAX").set_unit(px4io.parameter.unit.DEG).set_description("Absolute hard maximum multirotor roll/pitch airframe tilt vector angle boundary"));
     end
 
     % MC Inner Attitude Tracking Loops Parameters

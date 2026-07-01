@@ -123,14 +123,11 @@ classdef uORB_read
             set_param(outport_path, 'SampleTime', sample_time_val);
 
             if strcmp(get_param(bdroot(blockHandle), 'Lock'), 'off')
-                try
-                    % Dynamically map the C Caller to the return-by-value function name.
-                    set_param(c_caller_path, 'FunctionName', ['read_' selectedTopic]);
+                % Dynamically map the C Caller to the return-by-value function name.
+                set_param(c_caller_path, 'FunctionName', ['read_' selectedTopic]);
 
-                    % Explicitly specify the output data type as the bus type.
-                    set_param(outport_path, 'OutDataTypeStr', ['Bus: ' bus_name]);
-                catch
-                end
+                % Explicitly specify the output data type as the bus type.
+                set_param(outport_path, 'OutDataTypeStr', ['Bus: ' bus_name]);
             end
         end
 

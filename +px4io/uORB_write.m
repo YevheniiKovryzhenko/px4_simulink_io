@@ -123,14 +123,11 @@ classdef uORB_write
             set_param(inport_path, 'SampleTime', sample_time_val);
             
             if strcmp(get_param(bdroot(blockHandle), 'Lock'), 'off')
-                try
-                    % Maps the C Caller to the pass-by-value function name 'write_'.
-                    set_param(c_caller_path, 'FunctionName', ['write_' selectedTopic]);
-                    
-                    % Explicitly specify the input data type as the bus type.
-                    set_param(inport_path, 'OutDataTypeStr', ['Bus: ' bus_name]);
-                catch
-                end
+                % Maps the C Caller to the pass-by-value function name 'write_'.
+                set_param(c_caller_path, 'FunctionName', ['write_' selectedTopic]);
+                
+                % Explicitly specify the input data type as the bus type.
+                set_param(inport_path, 'OutDataTypeStr', ['Bus: ' bus_name]);
             end
         end
 

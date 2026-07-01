@@ -119,25 +119,22 @@ classdef uORB_msg
             set_param(outport_path, 'SampleTime', sample_time_val);
 
             if strcmp(get_param(bdroot(blockHandle), 'Lock'), 'off')
-                try
-                    % 1. Dynamically map the C Caller to your return-by-value initialization function name
-                    set_param(c_caller_path, 'FunctionName', ['init_' selectedTopic]);
+                % 1. Dynamically map the C Caller to your return-by-value initialization function name
+                set_param(c_caller_path, 'FunctionName', ['init_' selectedTopic]);
 
-                    % 2. CANONICAL R2025b FIX: Map the boolean function argument via Port Specification
-                    portSpecs = get_param(c_caller_path, 'FunctionPortSpecification');
-                    if ~isempty(portSpecs) && ~isempty(portSpecs.InputArguments)
-                        portSpecs.InputArguments(1).Scope = 'Parameter';
-                        if strcmp(init_value, 'NaN')
-                            set_param(c_caller_path, portSpecs.InputArguments(1).Name, 'true');
-                        else
-                            set_param(c_caller_path, portSpecs.InputArguments(1).Name, 'false');
-                        end
+                % 2. Map the boolean function argument via Port Specification
+                portSpecs = get_param(c_caller_path, 'FunctionPortSpecification');
+                if ~isempty(portSpecs) && ~isempty(portSpecs.InputArguments)
+                    portSpecs.InputArguments(1).Scope = 'Parameter';
+                    if strcmp(init_value, 'NaN')
+                        set_param(c_caller_path, portSpecs.InputArguments(1).Name, 'true');
+                    else
+                        set_param(c_caller_path, portSpecs.InputArguments(1).Name, 'false');
                     end
-
-                    % 3. Explicitly specify the output data type as the bus type
-                    set_param(outport_path, 'OutDataTypeStr', ['Bus: ' bus_name]);
-                catch
                 end
+
+                % 3. Explicitly specify the output data type as the bus type
+                set_param(outport_path, 'OutDataTypeStr', ['Bus: ' bus_name]);
             end
         end
 

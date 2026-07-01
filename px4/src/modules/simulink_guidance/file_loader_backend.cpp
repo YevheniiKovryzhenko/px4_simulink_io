@@ -67,6 +67,8 @@
 #define MODULE_NAME "simulink_guidance"
 #define PATH_BUFFER_SIZE 256
 
+// #define DEBUG
+
 file_loader_backend::file_loader_backend()
 {
 

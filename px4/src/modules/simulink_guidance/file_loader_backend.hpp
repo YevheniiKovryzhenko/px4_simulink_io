@@ -91,7 +91,7 @@ class file_loader_backend
 {
 private:
 	char file_name[256] {};                         ///< Filename (without path)
-	char directory[256] = "/fs/microsd/trajectories/"; ///< Directory path
+	char directory[256] = "/fs/microsd/Trajectories/"; ///< Directory path
 	int _fd = -1;                                   ///< File descriptor (-1 when closed)
 
 	/**

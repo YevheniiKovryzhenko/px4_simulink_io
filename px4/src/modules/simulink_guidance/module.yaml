@@ -41,3 +41,29 @@ parameters:
                 2: DEBUG_FLOAT_ARRAY
             default: 1
 
+        SMG_TRAJ_DIR:
+            description:
+                short: Choose Location of Trajectories
+                long: |
+                    Select where you have stored all trajectories. If running in SITL,
+                    then local ./Trajectories should work (rootfs/Trajectories folder). If
+                    running on hardware, you need to copy the "Trajectories" folder to the
+                    root of the SD-card.
+            type: enum
+            values:
+                0: LOCAL
+                1: SD_CARD
+            default: 1
+
+        SMG_TRAJ_ID:
+            description:
+                short: Set Trajectory ID
+                long: |
+                    You should place properly formatted trajectory file into SMG_TRAJ_DIR
+                    with unique id in the name of the file like ID0001_name.traj where
+                    SMG_TRAJ_ID = 1.
+            type: int32
+            default: 0
+
+
+

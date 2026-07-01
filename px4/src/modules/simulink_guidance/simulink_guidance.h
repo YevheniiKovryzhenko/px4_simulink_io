@@ -85,6 +85,9 @@ private:
 
 	void update_guidance(void);
 
+
+	void load_trajectory_from_params(void);
+
 	trajectory traj{};
 
 	hrt_abstime	_boot_timestamp{0};
@@ -111,7 +114,9 @@ private:
 	 */
 	DEFINE_PARAMETERS(
 		(ParamInt<px4::params::SMG_EN>) _param_smg_en,
-		(ParamInt<px4::params::SMG_OUT_TYPE>) _param_smg_out_type
+		(ParamInt<px4::params::SMG_OUT_TYPE>) _param_smg_out_type,
+		(ParamInt<px4::params::SMG_TRAJ_DIR>) _params_smg_traj_dir,
+		(ParamInt<px4::params::SMG_TRAJ_ID>) _params_smg_traj_id
 	)//MAKE SURE EVERY PARAMETER IS FOLLOWED BY "," AND LAST ONE DOES NOT HAVE ANYTHING
 };
 

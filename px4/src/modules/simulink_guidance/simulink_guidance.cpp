@@ -39,7 +39,9 @@
 
 #include <math.h>
 #include <uORB/topics/parameter_update.h>
+#include <dirent.h>
 //#include "waypoints.hpp"
+
 
 int SimulinkGuidance::print_status()
 {
@@ -92,13 +94,13 @@ int SimulinkGuidance::custom_command(int argc, char *argv[])
 				PX4_WARN("Failed to normalize file paths");
 				return 0;
 			}
+			PX4_INFO("normalized_dir=%s, normalized_file=%s", normalized_dir, normalized_file);
 
 			// Set source with normalized paths
 			if (get_instance()->traj.set_src(normalized_dir, normalized_file) < 0) {
 				PX4_WARN("Failed to set trajectory file");
 				return 0;
 			}
-
 			return 0;
 		}
 		else if(!strcmp(argv[i], "trajectory"))
@@ -235,6 +237,81 @@ int SimulinkGuidance::custom_command(int argc, char *argv[])
 	return print_usage("unknown command");
 }
 
+void SimulinkGuidance::load_trajectory_from_params()
+{
+	int32_t traj_dir_select = _params_smg_traj_dir.get();
+	int32_t traj_id         = _params_smg_traj_id.get();
+
+	// Isolated static cache variables.
+	// Initialized to an impossible state (-1) to guarantee an execution pass on the very first boot.
+	static int32_t last_traj_dir_select = -1;
+	static int32_t last_traj_id         = -1;
+
+	// ABORT EARLY: If the parameters have not drifted from our last recorded state, exit immediately.
+	// This perfectly protects manual CLI overrides because if the user doesn't touch the parameters,
+	// this condition is true and the function exits silently.
+	if (traj_dir_select == last_traj_dir_select && traj_id == last_traj_id) {
+		return;
+	}
+
+	// Resolve directory string based on the enum parameter selection
+	const char *dir_arg;
+	switch (traj_dir_select)
+	{
+	case 1:
+		dir_arg = "/fs/microsd/Trajectories/";
+	break;
+
+	default:
+		dir_arg = "./Trajectories/";
+	break;
+	}
+
+	// Open directory and locate the unique target matching prefix string (e.g., "ID0001_")
+	DIR *dir_handle = opendir(dir_arg);
+	if (dir_handle == nullptr) {
+		PX4_ERR("Auto-load failed: cannot open directory %s", dir_arg);
+		return;
+	}
+
+	char prefix_token[32];
+	snprintf(prefix_token, sizeof(prefix_token), "ID%04d_", (int)traj_id);
+
+	struct dirent *entry;
+	char discovered_filename[256] = "";
+
+	while ((entry = readdir(dir_handle)) != nullptr) {
+	if (entry->d_name[0] == '.') {
+		continue; // Clean character-literal check to skip hidden folders
+	}
+
+	if (strncmp(entry->d_name, prefix_token, strlen(prefix_token)) == 0) {
+		strncpy(discovered_filename, entry->d_name, sizeof(discovered_filename) - 1);
+		break;
+	}
+	}
+	closedir(dir_handle);
+
+	// Fallback safely if no matching prefix asset was found inside the folder
+	if (strlen(discovered_filename) == 0) {
+		PX4_WARN("Auto-load aborted: no file matching prefix '%s' in %s", prefix_token, dir_arg);
+		return;
+	}
+
+	// Pass directly to your backend matrix file loader
+	if (get_instance()->traj.set_src(dir_arg, discovered_filename) < 0) {
+		PX4_ERR("Auto-load: Backend rejected source files configuration");
+	} else {
+		// Update the tracking cache ONLY after a successful registration setup
+		last_traj_dir_select = traj_dir_select;
+		last_traj_id         = traj_id;
+
+		PX4_INFO("Successfully loaded trajectory asset: %s", discovered_filename);
+	}
+}
+
+
+
 
 int SimulinkGuidance::task_spawn(int argc, char *argv[])
 {
@@ -352,16 +429,20 @@ void SimulinkGuidance::update_guidance(void)
 
 void SimulinkGuidance::parameters_update(bool force)
 {
-	// check for parameter updates
+	// Check for parameter updates
 	if (_parameter_update_sub.updated() || force) {
-		// clear update
+		// Clear update notification from the uORB bus
 		parameter_update_s update;
 		_parameter_update_sub.copy(&update);
 
-		// update parameters from storage
+		// Synchronize the macro values from the central storage backend
 		updateParams();
+
+		// Check if trajectory needs to be loaded
+		load_trajectory_from_params();
 	}
 }
+
 
 int SimulinkGuidance::print_usage(const char *reason)
 {

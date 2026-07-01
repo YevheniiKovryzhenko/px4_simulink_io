@@ -117,12 +117,8 @@ classdef param_read
             set_param(outport_path, 'SampleTime', sample_time_val);
 
             if strcmp(get_param(bdroot(blockHandle), 'Lock'), 'off')
-                try
-                    set_param(c_caller_path, 'FunctionName', function_name);
-
-                    set_param(outport_path, 'OutDataTypeStr', out_data_type);
-                catch
-                end
+                set_param(c_caller_path, 'FunctionName', function_name);
+                set_param(outport_path, 'OutDataTypeStr', out_data_type);
             end
         end
 
@@ -138,15 +134,7 @@ classdef param_read
             % Output:
             %   paramType - Data type string ('int32', 'float32', 'single', etc.)
             
-            paramType = 'int32';
-            try
-                paramType = get_param(blockHandle, 'param_type');
-            catch
-                try
-                    paramType = get_param(blockHandle, 'datatype');
-                catch
-                end
-            end
+            paramType = get_param(blockHandle, 'param_type');
         end
 
         function paramType = normalizeParamDatatype(paramType)

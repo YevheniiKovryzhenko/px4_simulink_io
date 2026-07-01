@@ -2,13 +2,13 @@ module_name: SIMULINK_IO
 parameters:
     - group: SIMULINK Vehicle Model Shared Parameters
       definitions:
-          SM_VEH_MASS:
+          SM_MASS:
               description:
-                  short: Total dry vehicle structural mass representation
+                  short: Vehicle mass
               type: float
               unit: kg
               default: 1.8050
-              min: 0.0010
+              min: 0.0000
               decimal: 4
           SM_I_XX:
               description:
@@ -55,6 +55,8 @@ parameters:
               unit: kg m^2
               default: 0.0000
               decimal: 4
+    - group: SIMULINK Guidance Parameters
+      definitions:
           SM_GD_SW_DELAY:
               description:
                   short: Autonomous trajectory state handoff initialization latency delay
@@ -63,8 +65,6 @@ parameters:
               default: 10.0000
               min: 0.0000
               decimal: 4
-    - group: SIMULINK Guidance Parameters
-      definitions:
           SM_DF_ALPHA_NOM:
               description:
                   short: Nominal angle of attack at cruise 1g trim
@@ -223,7 +223,7 @@ parameters:
               default: 1.0000
               min: 0.0000
               decimal: 4
-          SM_STK_ATT_MAX_${i}:
+          SM_STK_ATT_MAX${i}:
               description:
                   short: Max roll pitch and yaw orientation bounding request from sticks
               type: float
@@ -433,8 +433,8 @@ parameters:
               description:
                   short: Absolute hard maximum multirotor roll/pitch airframe tilt vector angle boundary
               type: float
-              unit: rad
-              default: 0.5236
+              unit: deg
+              default: 30.0000
               decimal: 4
           SM_M_ATT_KP_R1_${i}:
               description:

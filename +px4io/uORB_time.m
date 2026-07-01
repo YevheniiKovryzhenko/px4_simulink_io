@@ -88,12 +88,9 @@ classdef uORB_time
             set_param(outport_path, 'SampleTime', sample_time_val);
 
             if strcmp(get_param(bdroot(blockHandle), 'Lock'), 'off')
-                try
-                    % Configure the C Caller to call high-resolution timer function.
-                    set_param(c_caller_path, 'FunctionName', 'read_px4_system_time');
-                    set_param(outport_path, 'OutDataTypeStr', 'uint64');
-                catch
-                end
+                % Configure the C Caller to call high-resolution timer function.
+                set_param(c_caller_path, 'FunctionName', 'read_px4_system_time');
+                set_param(outport_path, 'OutDataTypeStr', 'uint64');
             end
         end
     end

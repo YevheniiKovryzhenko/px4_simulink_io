@@ -26,7 +26,9 @@ function generate_params_json(Parameters)
     group_shared.add(px4io.parameter.float(I(1,2)).set_name("SM_I_XY").set_unit(px4io.parameter.unit.KG_M2).set_description("Inertia cross entry Ixy"));
     group_shared.add(px4io.parameter.float(I(1,3)).set_name("SM_I_XZ").set_unit(px4io.parameter.unit.KG_M2).set_description("Inertia cross entry Ixz"));
     group_shared.add(px4io.parameter.float(I(2,3)).set_name("SM_I_YZ").set_unit(px4io.parameter.unit.KG_M2).set_description("Inertia cross entry Iyz"));
-        
+    
+    group_shared.add(px4io.parameter.float(Parameters.Vehicle.ControlAllocation.MaxTotalThrust).set_name("SM_TOTAL_THRUST").set_unit(px4io.parameter.unit.N).set_description("Total thrust for control normalization").set_min(0.0));
+
     master_module.add_group(group_shared);
 
     % GROUP 2: SIMULINK Fixed-Wing Guidance & Differential Flatness

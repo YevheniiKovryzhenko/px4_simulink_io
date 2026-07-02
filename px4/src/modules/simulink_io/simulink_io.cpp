@@ -366,16 +366,16 @@ void SimulinkIO::run()
         // Execute the generated algorithm code
         _simulink_model.step();
 
-        // Increment loop tick counter
+        // // Increment loop tick counter
         // iteration_counter++;
 
-        // This block runs exactly every 1 seconds (200 cycles @ 200Hz)
+        // // This block runs exactly every 1 seconds (200 cycles @ 200Hz)
         // if (iteration_counter >= 200) {
         //     PX4_INFO("[Simulink Test] Class is ticking healthy! Running background steps...");
 
         //     // Query fields out of the generated model's global Output variable structure (Test_Y).
         //     // Extract a read-only handle reference to the private data structure
-        //     const HardwareModel::ExtY_HardwareModel_T &outputs = _simulink_model.getExternalOutputs();
+        //     const ExtY_HardwareModel_T &outputs = _simulink_model.getExternalOutputs();
         //     PX4_INFO("\n");
         //     print_pilot_input(outputs.PilotInput);
         //     print_states(outputs.States_c);

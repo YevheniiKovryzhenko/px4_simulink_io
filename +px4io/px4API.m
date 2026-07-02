@@ -57,7 +57,7 @@ classdef px4API < handle
         PX4ModuleName = 'simulink_io'
 
         % Supported file extensions for export
-        AllowedExtensions = {'.cpp', '.h'}        
+        AllowedExtensions = {'.c', '.cpp', '.h'}        
 
         % Enable/disable debug output
         % Set to false to suppress initialization messages and progress output
@@ -79,6 +79,7 @@ classdef px4API < handle
 
         % Name of the generated stub header file
         StubHeaderName = 'px4_simulink_api.h'
+        StubSrcName = 'px4_simulink_api.c'
 
         % In-memory cache of uORB topic metadata (JSON-serializable struct)
         OrbCache = struct()
@@ -227,7 +228,7 @@ classdef px4API < handle
 
             % 3. RUN ARCHITECTURAL BASELINE FILE CHECKS
             hdrPath = fullfile(obj.LocalGeneratedDir, obj.StubHeaderName);
-            srcPath = fullfile(obj.LocalGeneratedDir, 'px4_simulink_api.cpp');
+            srcPath = fullfile(obj.LocalGeneratedDir, obj.StubSrcName);
             checkPath = fullfile(obj.LocalGeneratedDir, obj.OrbCacheFile);
 
             if ~(exist(hdrPath, 'file') == 2 && exist(srcPath, 'file') == 2 && exist(checkPath, 'file') == 2)
@@ -597,9 +598,34 @@ classdef px4API < handle
             headerStr = sprintf('%s#ifndef PX4_SIMULINK_API_H\n#define PX4_SIMULINK_API_H\n\n', headerStr);
             headerStr = sprintf('%s#include <stdint.h>\n#include <stdbool.h>\n\n', headerStr);
 
-            % Forward declare all structs to handle circular dependencies
+            % --- TYPE DEFINITION STRATEGY ---
+            % For PX4 builds: Include the authentic, native uORB topic message headers directly!
+            % For local simulation: use our generated mockup struct definitions
+            headerStr = sprintf('%s#if defined(__PX4_LINUX) || defined(__PX4_POSIX) || defined(__PX4_NUTTX)\n', headerStr);
+            headerStr = sprintf('%s// PX4 Live Build: Pull real uORB architecture definitions directly from source tree\n', headerStr);
+            
             if ~isempty(allStructs)
-                headerStr = sprintf('%s// Forward declarations to handle inter-struct dependencies\n', headerStr);
+                % PASS 1: Include all uORB headers first
+                for i = 1:size(allStructs, 1)
+                    topicName = allStructs{i, 1};
+                    headerStr = sprintf('%s#include <uORB/topics/%s.h>\n', headerStr, topicName);
+                end
+                
+                % Add a blank line for readability between includes and typedefs
+                headerStr = sprintf('%s\n', headerStr);
+                
+                % PASS 2: Emit all typedefs to bridge PX4 named structs with Simulink expected typedefs
+                for i = 1:size(allStructs, 1)
+                    topicName = allStructs{i, 1};
+                    headerStr = sprintf('%stypedef struct %s_s %s_s;\n', headerStr, topicName, topicName);
+                end
+            end
+
+            headerStr = sprintf('%s#else\n', headerStr);
+            headerStr = sprintf('%s// Local Simulation: use generated forward declarations and mockup definitions\n\n', headerStr);
+
+            % Inject clean forward tags strictly for local desktop engine usage
+            if ~isempty(allStructs)
                 for i = 1:size(allStructs, 1)
                     topicName = allStructs{i, 1};
                     headerStr = sprintf('%sstruct %s_s;\n', headerStr, topicName);
@@ -607,19 +633,7 @@ classdef px4API < handle
                 headerStr = sprintf('%s\n', headerStr);
             end
 
-            % --- TYPE DEFINITION STRATEGY ---
-            % For PX4 builds: Use forward declarations only (real headers in implementation files)
-            %                Each .cpp file includes only what it needs
-            % For local simulation: use our generated struct definitions
-            headerStr = sprintf('%s\n#if defined(__PX4_LINUX) || defined(__PX4_POSIX) || defined(__PX4_NUTTX)\n', headerStr);
-            headerStr = sprintf('%s// PX4 Build: Forward declarations only (implementations include their own headers)\n', headerStr);
-            % Note: struct definitions are in #else branch below
-
-            headerStr = sprintf('%s#else\n', headerStr);
-            headerStr = sprintf('%s// Local Simulation: use generated struct definitions\n\n', headerStr);
-
-            % Output all struct definitions (now forward declarations exist)
-            % First, sort structs by dependencies to ensure definitions come before usage
+            % Sort and append structural layouts for local simulation execution paths
             if ~isempty(allStructs)
                 allStructs = obj.topologicalSortStructs(allStructs);
             end
@@ -627,37 +641,34 @@ classdef px4API < handle
                 headerStr = sprintf('%s%s\n', headerStr, allStructs{i, 2});
             end
 
-            headerStr = sprintf('%s\n#endif  // End PX4 vs Local struct definitions\n\n', headerStr);
+            headerStr = sprintf('%s#endif  // End PX4 vs Local isolation layer\n\n', headerStr);
 
-            % Start appending clean, strongly-typed function signatures underneath with C Linkage
+            % Establish clean, global C-linkage scope bounds for all function prototypes
             headerStr = sprintf('%s#ifdef __cplusplus\nextern "C" {\n#endif\n\n', headerStr);
             headerStr = sprintf('%s// --- STRONGLY-TYPED RETURN-BY-VALUE PROTOTYPES FOR C CALLER ---\n', headerStr);
 
             srcStr = sprintf('#include "%s"\n\n', obj.StubHeaderName);
 
-            % For PX4 builds, implementations are in simulink_io_glue.cpp
-            % For local simulation, provide empty stubs
+            % Define local workspace mock stubs environment constraints
             srcStr = sprintf('%s#if !defined(__PX4_LINUX) && !defined(__PX4_POSIX) && !defined(__PX4_NUTTX)\n', srcStr);
             srcStr = sprintf('%s// Local simulation stubs only\n\n', srcStr);
 
-            % Append zero-input reader functions and single-input writer functions for all topics
-            % Convert CamelCase filenames to snake_case immediately for consistent naming
+            % Write clean function signatures using the unified typedef
             for i = 1:length(msgFiles)
                 [~, camelName, ~] = fileparts(msgFiles(i).name);
-                topicName = obj.camelCaseToSnakeCase(camelName);  % Convert to snake_case
+                topicName = obj.camelCaseToSnakeCase(camelName);
 
-                % 1. Reader Prototype & Mock Source: Returns full structure layout by value
-                headerStr = sprintf('%sstruct %s_s read_%s(void);\n', headerStr, topicName, topicName);
-                srcStr = sprintf('%sextern "C" struct %s_s read_%s(void) { struct %s_s empty = {0}; return empty; }\n', srcStr, topicName, topicName, topicName);
+                % 1. Reader Prototype & Mock Source
+                headerStr = sprintf('%s%s_s read_%s(void);\n', headerStr, topicName, topicName);
+                srcStr = sprintf('%sextern "C" %s_s read_%s(void) { %s_s empty = {0}; return empty; }\n', srcStr, topicName, topicName, topicName);
 
-                % 2. Writer Prototype & Mock Source: Accepts flat structure layout copy by value
-                headerStr = sprintf('%svoid write_%s(struct %s_s in);\n', headerStr, topicName, topicName);
-                srcStr = sprintf('%sextern "C" void write_%s(struct %s_s in) {}\n', srcStr, topicName, topicName);
+                % 2. Writer Prototype & Mock Source
+                headerStr = sprintf('%svoid write_%s(%s_s in);\n', headerStr, topicName, topicName);
+                srcStr = sprintf('%sextern "C" void write_%s(%s_s in) {}\n', srcStr, topicName, topicName);
 
                 % 3. Dynamic Message Initialization Prototype & Mock Source
-                % Accepts a boolean flag (true for NaN initialization, false for Zero initialization)
-                headerStr = sprintf('%sstruct %s_s init_%s(bool initialize_to_nan);\n', headerStr, topicName, topicName);
-                srcStr = sprintf('%sextern "C" struct %s_s init_%s(bool initialize_to_nan) { struct %s_s empty = {0}; return empty; }\n', srcStr, topicName, topicName, topicName);
+                headerStr = sprintf('%s%s_s init_%s(bool initialize_to_nan);\n', headerStr, topicName, topicName);
+                srcStr = sprintf('%sextern "C" %s_s init_%s(bool initialize_to_nan) { %s_s empty = {0}; return empty; }\n', srcStr, topicName, topicName, topicName);
             end
 
             % Append a strongly-typed, zero-input function that returns system time by value
@@ -699,15 +710,20 @@ classdef px4API < handle
             end
 
             % 2. Write out the matching strongly-typed source stubs file locally
-            srcFilePath = fullfile(obj.LocalGeneratedDir, 'px4_simulink_api.cpp');
+            srcFilePath = fullfile(obj.LocalGeneratedDir, obj.StubSrcName);
             fid = fopen(srcFilePath, 'w');
             if fid == -1
                 error('[px4API:Error] Could not write source file: %s', srcFilePath);
             end
-            fprintf(fid, '%s', srcStr);
+            
+            % Strip individual 'extern "C"' prefixes from the source string loop definitions
+            % Since they are already covered by the global header wrapper configuration
+            cleanSrcStr = strrep(srcStr, 'extern "C" ', '');
+            
+            fprintf(fid, '%s', cleanSrcStr);
             fclose(fid);
             if obj.ShowDebug
-                fprintf('✓ Successfully generated source stubs for C Caller: px4_simulink_api.cpp\n');
+                fprintf('✓ Successfully generated source stubs for C Caller: %s\n', obj.StubSrcName);
             end
 
             % 3. Assign all Simulink bus objects to the workspace
@@ -725,6 +741,7 @@ classdef px4API < handle
 
             % Persist the comprehensive cache (with both orb_id and field metadata) to JSON
             obj.saveOrbCache();
+
         end
 
 
@@ -1067,7 +1084,7 @@ classdef px4API < handle
                     [~, ~, ext] = fileparts(entries(i).name);
 
                     % Skip px4_simulink_api.cpp for PX4 builds (empty/simulation-only stubs)
-                    if strcmp(entries(i).name, 'px4_simulink_api.cpp')
+                    if strcmp(entries(i).name, obj.StubSrcName)
                         continue;
                     end
 
@@ -1171,7 +1188,7 @@ classdef px4API < handle
             cppStr = sprintf('%s#include <px4_platform_common/defines.h>\n', cppStr); % Core PX4 macro platform propert
             cppStr = sprintf('%s#include <px4_platform_common/log.h>\n#include <uORB/uORB.h>\n', cppStr);
             cppStr = sprintf('%s#include <string.h>\n', cppStr);
-            cppStr = sprintf('%s#include "px4_simulink_api.h"\n', cppStr);
+            cppStr = sprintf('%s#include "%s"\n', cppStr, obj.StubHeaderName);
 
             % Include hrt header if system time is needed (high-resolution timer)
             if hasSystemTime
@@ -1209,7 +1226,7 @@ classdef px4API < handle
                 variants = obj.getTopicVariants(baseTopic);
                 for v = 1:length(variants)
                     variantName = variants{v};
-                    cppStr = sprintf('%sstruct %s_s read_%s(void) {\n', cppStr, baseTopic, variantName);
+                    cppStr = sprintf('%s%s_s read_%s(void) {\n', cppStr, baseTopic, variantName);
                     cppStr = sprintf('%s    static int sub_handle = -1;\n', cppStr);
                     cppStr = sprintf('%s    if (sub_handle < 0) { sub_handle = orb_subscribe(ORB_ID(%s)); }\n', cppStr, variantName);
                     cppStr = sprintf('%s    static struct %s_s local_buffer;\n', cppStr, baseTopic);
@@ -1219,7 +1236,7 @@ classdef px4API < handle
                     cppStr = sprintf('%s    return local_buffer;\n}\n\n', cppStr);
                 end
                 if ~any(strcmp(variants, baseTopic))
-                    cppStr = sprintf('%sstruct %s_s read_%s(void) {\n', cppStr, baseTopic, baseTopic);
+                    cppStr = sprintf('%s%s_s read_%s(void) {\n', cppStr, baseTopic, baseTopic);
                     cppStr = sprintf('%s    return read_%s();\n}\n\n', cppStr, variants{1});
                 end
             end
@@ -1234,14 +1251,14 @@ classdef px4API < handle
                 variants = obj.getTopicVariants(baseTopic);
                 for v = 1:length(variants)
                     variantName = variants{v};
-                    cppStr = sprintf('%svoid write_%s(struct %s_s in) {\n', cppStr, variantName, baseTopic);
+                    cppStr = sprintf('%svoid write_%s(%s_s in) {\n', cppStr, variantName, baseTopic);
                     cppStr = sprintf('%s    static orb_advert_t pub_handle = nullptr;\n', cppStr);
                     cppStr = sprintf('%s    if (pub_handle == nullptr) { pub_handle = orb_advertise(ORB_ID(%s), &in); }\n', cppStr, variantName);
                     cppStr = sprintf('%s    else { orb_publish(ORB_ID(%s), pub_handle, &in); }\n', cppStr, variantName);
                     cppStr = sprintf('%s}\n\n', cppStr);
                 end
                 if ~any(strcmp(variants, baseTopic))
-                    cppStr = sprintf('%svoid write_%s(struct %s_s in) {\n', cppStr, baseTopic, baseTopic);
+                    cppStr = sprintf('%svoid write_%s(%s_s in) {\n', cppStr, baseTopic, baseTopic);
                     cppStr = sprintf('%s    write_%s(in);\n}\n\n', cppStr, variants{1});
                 end
             end
@@ -1257,7 +1274,7 @@ classdef px4API < handle
                 variants = obj.getTopicVariants(baseTopic);
                 for v = 1:length(variants)
                     variantName = variants{v};
-                    cppStr = sprintf('%sstruct %s_s init_%s(bool initialize_to_nan) {\n', cppStr, baseTopic, variantName);
+                    cppStr = sprintf('%s%s_s init_%s(bool initialize_to_nan) {\n', cppStr, baseTopic, variantName);
                     cppStr = sprintf('%s    struct %s_s msg;\n', cppStr, baseTopic);
                     cppStr = sprintf('%s    memset(&msg, 0, sizeof(msg));\n', cppStr);
                     cppStr = sprintf('%s    if (initialize_to_nan) {\n', cppStr);
@@ -1294,7 +1311,7 @@ classdef px4API < handle
                     cppStr = sprintf('%s    return msg;\n}\n\n', cppStr);
                 end
                 if ~any(strcmp(variants, baseTopic))
-                    cppStr = sprintf('%sstruct %s_s init_%s(bool initialize_to_nan) {\n', cppStr, baseTopic, baseTopic);
+                    cppStr = sprintf('%s%s_s init_%s(bool initialize_to_nan) {\n', cppStr, baseTopic, baseTopic);
                     cppStr = sprintf('%s    return init_%s(initialize_to_nan);\n}\n\n', cppStr, variants{1});
                 end
             end
@@ -1716,6 +1733,8 @@ classdef px4API < handle
 
             busObj = Simulink.Bus;
             busObj.Elements = elements;
+            busObj.DataScope = 'Imported';
+            busObj.HeaderFile = 'px4_simulink_api.h';
         end
 
         function runPostCodeGen(buildInfo)
@@ -1752,6 +1771,7 @@ classdef px4API < handle
             %
             % This wrapper decouples PX4 code from the specific model name,
             % allowing model renaming without requiring changes to PX4 integration code.
+            % It supports Nonreusable Function (Static Global) code interfaces.
             %
             % Inputs:
             %   modelName - The actual Simulink model name (from buildInfo.ComponentName)
@@ -1759,12 +1779,12 @@ classdef px4API < handle
             %
             % Output file: simulink_model_wrapper.h
             % Contains: C++ namespace with generic SimulinkModel class
-        
+
             if isempty(modelName) || ~(ischar(modelName) || isstring(modelName))
                 error('[px4API:Error] modelName must be provided and non-empty');
             end
-        
-            % --- NEW: Determine if the model has any Inports or Outports ---
+
+            % --- Determine if the model has any Inports or Outports ---
             isModelLoaded = bdIsLoaded(modelName);
             if ~isModelLoaded
                 load_system(modelName);
@@ -1782,34 +1802,45 @@ classdef px4API < handle
                 close_system(modelName, 0); 
             end
             % --------------------------------------------------------------
-        
+
             wrapperStr = sprintf('// Auto-generated model-agnostic wrapper\n');
             wrapperStr = sprintf('%s// Decouples PX4 code from model name to enable model renaming without PX4 changes\n', wrapperStr);
-            wrapperStr = sprintf('%s// Model: %s\n', wrapperStr, modelName);
+            wrapperStr = sprintf('%s// Model: %s (Nonreusable / Static Memory footprint)\n', wrapperStr, modelName);
             wrapperStr = sprintf('%s#pragma once\n\n', wrapperStr);
+            
+            % Forward-declare Simulink generated functions with C linkage BEFORE including the header.
+            % This forces the C++ compiler to treat the subsequent declarations inside HardwareModel.h
+            % as C linkage, preventing name mangling while allowing C++ uORB headers to compile correctly.
+            wrapperStr = sprintf('%s#ifdef __cplusplus\nextern "C" {\n#endif\n', wrapperStr);
+            wrapperStr = sprintf('%svoid %s_initialize(void);\n', wrapperStr, modelName);
+            wrapperStr = sprintf('%svoid %s_step(void);\n', wrapperStr, modelName);
+            wrapperStr = sprintf('%s#ifdef __cplusplus\n}\n#endif\n\n', wrapperStr);
+
+            % Include the header normally (no extern "C" wrapper block)
             wrapperStr = sprintf('%s#include "%s.h"\n\n', wrapperStr, modelName);
-        
+
             wrapperStr = sprintf('%snamespace SimulinkWrapper {\n\n', wrapperStr);
             wrapperStr = sprintf('%s// Generic model wrapper (model-name-agnostic interface)\n', wrapperStr);
             wrapperStr = sprintf('%sclass SimulinkModel {\n', wrapperStr);
-            wrapperStr = sprintf('%sprivate:\n', wrapperStr);
-            wrapperStr = sprintf('%s    %s _model;\n\n', wrapperStr, modelName);
             wrapperStr = sprintf('%spublic:\n', wrapperStr);
-            wrapperStr = sprintf('%s    void initialize() { _model.initialize(); }\n', wrapperStr);
-            wrapperStr = sprintf('%s    void step() { _model.step(); }\n', wrapperStr);
+            
+            % Map initialization and cyclic loops directly to global static functions
+            wrapperStr = sprintf('%s    void initialize() { %s_initialize(); }\n', wrapperStr, modelName);
+            wrapperStr = sprintf('%s    void step() { %s_step(); }\n', wrapperStr, modelName);
             
             % --- DYNAMIC HANDLING: Inputs Interface ---
             if hasInputs
-                % Use a non-const reference wrapper so the PX4 side can feed input data
-                wrapperStr = sprintf('%s    %s::ExtU_%s_T& getExternalInputs() { return _model.getExternalInputs(); }\n', wrapperStr, modelName, modelName);
+                % Returns a reference to the global static input structure variable
+                wrapperStr = sprintf('%s    ExtU_%s_T& getExternalInputs() { return %s_U; }\n', wrapperStr, modelName, modelName);
             else
                 wrapperStr = sprintf('%s    // Model has no root inputs; returning nullptr fallback\n', wrapperStr);
                 wrapperStr = sprintf('%s    void* getExternalInputs() { return nullptr; }\n', wrapperStr);
             end
-        
+
             % --- DYNAMIC HANDLING: Outputs Interface ---
             if hasOutputs
-                wrapperStr = sprintf('%s    const %s::ExtY_%s_T& getExternalOutputs() { return _model.getExternalOutputs(); }\n', wrapperStr, modelName, modelName);
+                % Returns a read-only reference to the global static output structure variable
+                wrapperStr = sprintf('%s    const ExtY_%s_T& getExternalOutputs() { return %s_Y; }\n', wrapperStr, modelName, modelName);
             else
                 wrapperStr = sprintf('%s    // Model has no root outputs; returning nullptr fallback\n', wrapperStr);
                 wrapperStr = sprintf('%s    void* getExternalOutputs() { return nullptr; }\n', wrapperStr);
@@ -1818,12 +1849,12 @@ classdef px4API < handle
             
             wrapperStr = sprintf('%s};\n\n', wrapperStr);
             wrapperStr = sprintf('%s}  // namespace SimulinkWrapper\n', wrapperStr);
-        
+
             % Write wrapper header
             if ~exist(outputDir, 'dir')
                 mkdir(outputDir);
             end
-        
+
             wrapperPath = fullfile(outputDir, 'simulink_model_wrapper.h');
             fid = fopen(wrapperPath, 'w');
             if fid == -1
@@ -1833,6 +1864,5 @@ classdef px4API < handle
             fclose(fid);
             fprintf('✓ Generated model-agnostic wrapper: simulink_model_wrapper.h (model: %s)\n', modelName);
         end
-
     end
 end

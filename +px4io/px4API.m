@@ -81,6 +81,8 @@ classdef px4API < handle
         StubHeaderName = 'px4_simulink_api.h'
         StubSrcName = 'px4_simulink_api.c'
 
+        GlueName = 'px4_simulink_glue.cpp'
+
         % In-memory cache of uORB topic metadata (JSON-serializable struct)
         OrbCache = struct()
 
@@ -1005,7 +1007,7 @@ classdef px4API < handle
             end
 
             % Extract model component name natively from buildInfo
-            modelName = buildInfo.ComponentName;
+            modelName = buildInfo.getBuildName;
             if isempty(modelName)
                 error('[px4API:Error] buildInfo must provide ComponentName.');
             end
@@ -1014,7 +1016,7 @@ classdef px4API < handle
             obj.generateModelWrapper(modelName, obj.LocalGeneratedDir);
 
             % Generate the model-specific glue locally from the live Simulink model.
-            obj.generateOmnipotentCppGlue(obj.LocalGeneratedDir, modelName);
+            obj.generateOmnipotentCppGlue(obj.LocalGeneratedDir, buildInfo);
             
             filesExportedCount = 0;
             filesExportedCount = filesExportedCount + obj.copyGeneratedCodeFiles(obj.LocalGeneratedDir, obj.ResolvedExternalDir, false);
@@ -1040,7 +1042,7 @@ classdef px4API < handle
             end
 
             % Copy any non-inlinable shared utilities/types if they exist
-            sharedUtilsDir = fullfile(startDirValue, 'slprj', 'ert', '_sharedutils');
+            sharedUtilsDir = fullfile(startDirValue, buildDirInfo.SharedUtilsTgtDir);
             if exist(sharedUtilsDir, 'dir')
                 fprintf('Deploying critical shared utility headers and types...\n');
                 filesExportedCount = filesExportedCount + obj.copyGeneratedCodeFiles(sharedUtilsDir, obj.ResolvedExternalDir, false);
@@ -1096,34 +1098,17 @@ classdef px4API < handle
             end
         end
 
-        function generateOmnipotentCppGlue(obj, outputDir, modelName)
+        function generateOmnipotentCppGlue(obj, outputDir, buildInfo)
             % Generate omnipotent uORB routing layer and parameter access functions.
             %
-            % This is the second major code generation stage, creating:
-            %   1. simulink_io_glue.cpp - Implementation of read/write/init functions
-            %   2. Parameter access layer - read_px4_param_* and write_px4_param_*
-            %
             % Optimization strategy:
-            %   - Selective generation: Only generates code for topics used in the model
-            %   - Scans Test_ert_rtw/Test.cpp to find actual function calls
-            %   - Uses regex to identify read_*/write_* calls (excludes px4_param_* functions)
-            %   - Reduces compile time and binary size vs. generating for all 200+ topics
-            %
-            % Parameter handling:
-            %   - write_* functions check if value changed before calling param_set
-            %   - Avoids unnecessary system notifications and syncs
-            %   - Uses 1e-6f epsilon for float comparisons (matches PX4 FLT_EPSILON)
-            %
-            % Input:
-            %   outputDir - Directory for simulink_io_glue.cpp (default: ResolvedExternalDir)
-            %
-            % Generated file structure:
-            %   1. Standard includes (cmath, uORB, etc.)
-            %   2. extern "C" { ... }      <- uORB topic functions (read/write/init)
-            %   3. } // extern "C"
-            %   4. #include <parameters/param.h>     <- Avoid C linkage for C++ headers
-            %   5. extern "C" { ... }      <- Parameter functions
-            %   6. }
+            %   - Native PX4 C++ Handles: Uses uORB::Publication and uORB::Subscription 
+            %     for zero-overhead, statically-typed topic access.
+            %   - Global Initialization: All uORB handles are instantiated exactly once 
+            %     in init_px4_simulink_io() via a singleton C++ class.
+            %   - Robust Parameters: Reverts to param_find/param_get to guarantee 
+            %     compatibility with all PX4 parameters without requiring strict 
+            %     parameters.xml registration or ModuleParams update loops.
 
             if nargin < 2 || isempty(outputDir)
                 outputDir = obj.ResolvedExternalDir;
@@ -1134,160 +1119,167 @@ classdef px4API < handle
 
             % Step 1: Scan generated model code to find which functions are called
             requiredTopics = {};
-            testCppPath = fullfile(obj.PackageRoot, sprintf('%s_ert_rtw', modelName), sprintf('%s.cpp', modelName));
+            buildDirs = buildInfo.getBuildDirList;
+            buildName = buildInfo.getBuildName;
+
+            testCppPath = fullfile(buildDirs{1}, sprintf('%s.c', buildName));
+            
+            readTopics = {};
+            writeTopics = {};
+            hasSystemTime = false;
+            
             if isfile(testCppPath)
                 fid = fopen(testCppPath, 'r');
                 testContent = fread(fid, '*char')';
                 fclose(fid);
 
-                % Find all read_TOPIC() and write_TOPIC() calls, but keep PX4 parameter
-                % helpers out of the uORB topic list.
+                % Extract uORB topics
                 readMatches = regexp(testContent, 'read_(?!px4_param_)(\w+)\s*\(', 'tokens');
                 writeMatches = regexp(testContent, 'write_(?!px4_param_)(\w+)\s*\(', 'tokens');
 
-                % FIXED MATRICES BLOCK: Force convert both results into linear row cells
-                % to prevent dimension mismatch crashes regardless of argument contents.
-                readTopicsList = {};
-                if ~isempty(readMatches), readTopicsList = [readMatches{:}]; end
+                if ~isempty(readMatches), readTopics = unique([readMatches{:}]); end
+                if ~isempty(writeMatches), writeTopics = unique([writeMatches{:}]); end
 
-                writeTopicsList = {};
-                if ~isempty(writeMatches), writeTopicsList = [writeMatches{:}]; end
-
-                % Combine the flat arrays horizontally safely
-                allMatches = [readTopicsList, writeTopicsList];
-                if ~isempty(allMatches)
-                    requiredTopics = unique(allMatches);
-                end
-
-                % Separate special non-uORB topics from regular uORB topics
-                hasSystemTime = false;
-                orbTopics = {};
-                for i = 1:length(requiredTopics)
-                    if strcmp(requiredTopics{i}, 'px4_system_time')
-                        hasSystemTime = true;
-                    else
-                        orbTopics{end+1} = requiredTopics{i}; %#ok<AGROW>
-                    end
+                readTopics = readTopics(~strcmp(readTopics, 'px4_system_time'));
+                writeTopics = writeTopics(~strcmp(writeTopics, 'px4_system_time'));
+                
+                if contains(testContent, 'read_px4_system_time')
+                    hasSystemTime = true;
                 end
 
                 if obj.ShowDebug
-                    fprintf('  Found %d unique topics used in model\n', length(requiredTopics));
+                    fprintf('  Found %d read topics, %d write topics\n', length(readTopics), length(writeTopics));
                 end                
             else
                 if obj.ShowDebug
-                    fprintf('  Warning: Could not find Test.cpp, generating for all topics and methods\n');
+                    fprintf('  Warning: Could not find generated model code. Falling back to all cached topics.\n');
                 end
-                % obj.OrbCache.topics %%% We have this instead and should use the cache!
                 orbTopics = fieldnames(obj.OrbCache.topics)';
+                readTopics = orbTopics;
+                writeTopics = orbTopics;
                 hasSystemTime = true;
             end
 
             % Start building the C++ source file
             cppStr = sprintf('// Auto-generated selective strongly-typed return-by-value uORB routing layer\n');
-            cppStr = sprintf('%s#include <cmath>\n', cppStr); % Standard C++ math header for NAN definitions
-            cppStr = sprintf('%s#include <px4_platform_common/defines.h>\n', cppStr); % Core PX4 macro platform propert
-            cppStr = sprintf('%s#include <px4_platform_common/log.h>\n#include <uORB/uORB.h>\n', cppStr);
+            cppStr = sprintf('%s#include <cmath>\n', cppStr); 
+            cppStr = sprintf('%s#include <px4_platform_common/defines.h>\n', cppStr); 
+            cppStr = sprintf('%s#include <px4_platform_common/log.h>\n', cppStr);
+            cppStr = sprintf('%s#include <uORB/uORB.h>\n', cppStr);
+            cppStr = sprintf('%s#include <uORB/Publication.hpp>\n', cppStr);
+            cppStr = sprintf('%s#include <uORB/Subscription.hpp>\n', cppStr);
             cppStr = sprintf('%s#include <string.h>\n', cppStr);
-            cppStr = sprintf('%s#include "%s"\n', cppStr, obj.StubHeaderName);
+            cppStr = sprintf('%s#include "%s"\n\n', cppStr, obj.StubHeaderName);
 
-            % Include hrt header if system time is needed (high-resolution timer)
             if hasSystemTime
                 cppStr = sprintf('%s#include <drivers/drv_hrt.h>\n', cppStr);
             end
 
-            % Include real uORB topic headers for glue function implementations
-            for i = 1:length(orbTopics)
-                topicName = orbTopics{i};
-                cppStr = sprintf('%s#include <uORB/topics/%s.h>\n', cppStr, topicName);
+            % Include all necessary uORB topic headers
+            allTopics = unique([readTopics, writeTopics]);
+            for i = 1:length(allTopics)
+                topicName = allTopics{i};
+                baseTopic = obj.getBaseTopicForVariant(topicName);
+                cppStr = sprintf('%s#include <uORB/topics/%s.h>\n', cppStr, baseTopic);
             end
 
-            % --- THE LINUX LINKER FIXED PASS ---
-            % Enforce pure C linkage output rules for ALL generated implementation blocks.
-            % This prevents the C++ compiler from mangling function signatures, which resolves
-            % the "undefined reference" errors during the final bin/px4 link step.
-            cppStr = sprintf('%s\nextern "C" {\n\n', cppStr);
+            % =========================================================================
+            % C++ SINGLETON CLASS FOR NATIVE PX4 UORB HANDLES
+            % =========================================================================
+            cppStr = sprintf('%s\nclass SimulinkGlue {\n', cppStr);
+            cppStr = sprintf('%spublic:\n', cppStr);
+            cppStr = sprintf('%s\tSimulinkGlue() {}\n\n', cppStr);
+
+            % uORB Publications
+            for i = 1:length(writeTopics)
+                topicName = writeTopics{i};
+                baseTopic = obj.getBaseTopicForVariant(topicName);
+                cppStr = sprintf('%s\tuORB::Publication<%s_s> _%s_pub{ORB_ID(%s)};\n', cppStr, baseTopic, topicName, topicName);
+            end
+
+            % uORB Subscriptions
+            for i = 1:length(readTopics)
+                topicName = readTopics{i};
+                baseTopic = obj.getBaseTopicForVariant(topicName);
+                cppStr = sprintf('%s\tuORB::Subscription _%s_sub{ORB_ID(%s)};\n', cppStr, topicName, topicName);
+            end
+
+            cppStr = sprintf('%s};\n\n', cppStr);
+            cppStr = sprintf('%sstatic SimulinkGlue *g_glue = nullptr;\n\n', cppStr);
 
             % =========================================================================
-            % SPECIAL CASE: System Time (uses hrt_absolute_time, not uORB)
+            % C-LINKAGE WRAPPER START
             % =========================================================================
+            cppStr = sprintf('%sextern "C" {\n\n', cppStr);
+
+            % Global Init
+            cppStr = sprintf('%svoid init_px4_simulink_io(void) {\n', cppStr);
+            cppStr = sprintf('%s\tif (g_glue == nullptr) {\n', cppStr);
+            cppStr = sprintf('%s\t\tg_glue = new SimulinkGlue();\n', cppStr);
+            cppStr = sprintf('%s\t}\n', cppStr);
+            cppStr = sprintf('%s}\n\n', cppStr);
+
+            % System Time
             if hasSystemTime
                 cppStr = sprintf('%suint64_t read_px4_system_time(void) {\n', cppStr);
-                cppStr = sprintf('%s    return hrt_absolute_time();\n', cppStr);
+                cppStr = sprintf('%s\treturn hrt_absolute_time();\n', cppStr);
                 cppStr = sprintf('%s}\n\n', cppStr);
             end
 
-            % =========================================================================
-            % 1. RETURN-BY-VALUE READER FUNCTIONS (for required uORB topics only)
-            % =========================================================================
-            % Returning the structure directly by value forces the Simulink C Caller to
-            % recognize the function as a pure output node, removing the dual out_buffer ports.
-            for i = 1:length(orbTopics)
-                baseTopic = orbTopics{i};
-                variants = obj.getTopicVariants(baseTopic);
-                for v = 1:length(variants)
-                    variantName = variants{v};
-                    cppStr = sprintf('%s%s_s read_%s(void) {\n', cppStr, baseTopic, variantName);
-                    cppStr = sprintf('%s    static int sub_handle = -1;\n', cppStr);
-                    cppStr = sprintf('%s    if (sub_handle < 0) { sub_handle = orb_subscribe(ORB_ID(%s)); }\n', cppStr, variantName);
-                    cppStr = sprintf('%s    static struct %s_s local_buffer;\n', cppStr, baseTopic);
-                    cppStr = sprintf('%s    bool updated = false;\n', cppStr);
-                    cppStr = sprintf('%s    orb_check(sub_handle, &updated);\n', cppStr);
-                    cppStr = sprintf('%s    if (updated) { orb_copy(ORB_ID(%s), sub_handle, &local_buffer); }\n', cppStr, variantName);
-                    cppStr = sprintf('%s    return local_buffer;\n}\n\n', cppStr);
-                end
-                if ~any(strcmp(variants, baseTopic))
+            % Pure Readers
+            for i = 1:length(readTopics)
+                topicName = readTopics{i};
+                baseTopic = obj.getBaseTopicForVariant(topicName);
+                cppStr = sprintf('%s%s_s read_%s(void) {\n', cppStr, baseTopic, topicName);
+                cppStr = sprintf('%s\tstatic %s_s local_buffer{};\n', cppStr, baseTopic);
+                cppStr = sprintf('%s\tif (g_glue) g_glue->_%s_sub.copy(&local_buffer);\n', cppStr, topicName);
+                cppStr = sprintf('%s\treturn local_buffer;\n}\n\n', cppStr);
+            end
+            
+            % Generate aliases for base topics
+            for i = 1:length(allTopics)
+                topicName = allTopics{i};
+                baseTopic = obj.getBaseTopicForVariant(topicName);
+                if ~strcmp(topicName, baseTopic) && ~any(strcmp(readTopics, baseTopic))
                     cppStr = sprintf('%s%s_s read_%s(void) {\n', cppStr, baseTopic, baseTopic);
-                    cppStr = sprintf('%s    return read_%s();\n}\n\n', cppStr, variants{1});
+                    cppStr = sprintf('%s\treturn read_%s();\n}\n\n', cppStr, topicName);
                 end
             end
 
-            % =========================================================================
-            % 2. PASS-BY-VALUE WRITER FUNCTIONS (for required uORB topics only)
-            % =========================================================================
-            % Accepting the struct copy directly by value natively places a single input port
-            % arrow on the left-hand face of the C Caller block without triggering parameter scope leaks.
-            for i = 1:length(orbTopics)
-                baseTopic = orbTopics{i};
-                variants = obj.getTopicVariants(baseTopic);
-                for v = 1:length(variants)
-                    variantName = variants{v};
-                    cppStr = sprintf('%svoid write_%s(%s_s in) {\n', cppStr, variantName, baseTopic);
-                    cppStr = sprintf('%s    static orb_advert_t pub_handle = nullptr;\n', cppStr);
-                    cppStr = sprintf('%s    if (pub_handle == nullptr) { pub_handle = orb_advertise(ORB_ID(%s), &in); }\n', cppStr, variantName);
-                    cppStr = sprintf('%s    else { orb_publish(ORB_ID(%s), pub_handle, &in); }\n', cppStr, variantName);
-                    cppStr = sprintf('%s}\n\n', cppStr);
-                end
-                if ~any(strcmp(variants, baseTopic))
+            % Pure Writers
+            for i = 1:length(writeTopics)
+                topicName = writeTopics{i};
+                baseTopic = obj.getBaseTopicForVariant(topicName);
+                cppStr = sprintf('%svoid write_%s(%s_s in) {\n', cppStr, topicName, baseTopic);
+                cppStr = sprintf('%s\tif (g_glue) g_glue->_%s_pub.publish(in);\n', cppStr, topicName);
+                cppStr = sprintf('%s}\n\n', cppStr);
+            end
+
+            for i = 1:length(allTopics)
+                topicName = allTopics{i};
+                baseTopic = obj.getBaseTopicForVariant(topicName);
+                if ~strcmp(topicName, baseTopic) && ~any(strcmp(writeTopics, baseTopic))
                     cppStr = sprintf('%svoid write_%s(%s_s in) {\n', cppStr, baseTopic, baseTopic);
-                    cppStr = sprintf('%s    write_%s(in);\n}\n\n', cppStr, variants{1});
+                    cppStr = sprintf('%s\twrite_%s(in);\n}\n\n', cppStr, topicName);
                 end
             end
 
-            % =========================================================================
-            % 3. DYNAMIC INITIALIZATION FUNCTIONS (for required uORB topics only)
-            % =========================================================================
-            % Zeroes out integers/booleans natively and maps the NAN compiler macro
-            % dynamically across only the verified floating-point fields (float32/float64).
-            % Uses cached field metadata from persistent JSON cache.
-            for i = 1:length(orbTopics)
-                baseTopic = orbTopics{i};
+            % Init Functions (NaN zeroing)
+            for i = 1:length(allTopics)
+                baseTopic = allTopics{i};
                 variants = obj.getTopicVariants(baseTopic);
                 for v = 1:length(variants)
                     variantName = variants{v};
                     cppStr = sprintf('%s%s_s init_%s(bool initialize_to_nan) {\n', cppStr, baseTopic, variantName);
-                    cppStr = sprintf('%s    struct %s_s msg;\n', cppStr, baseTopic);
-                    cppStr = sprintf('%s    memset(&msg, 0, sizeof(msg));\n', cppStr);
-                    cppStr = sprintf('%s    if (initialize_to_nan) {\n', cppStr);
+                    cppStr = sprintf('%s\tstruct %s_s msg;\n', cppStr, baseTopic);
+                    cppStr = sprintf('%s\tmemset(&msg, 0, sizeof(msg));\n', cppStr);
+                    cppStr = sprintf('%s\tif (initialize_to_nan) {\n', cppStr);
 
-                    % Retrieve field metadata from JSON cache
                     fieldMeta = obj.getFieldMetadataFromCache(baseTopic);
 
-                    % Generate NaN initialization code from cached metadata
                     if ~isempty(fieldMeta) && height(fieldMeta) > 0
-                        % Iterate over all fields in the table
                         for fieldIdx = 1:height(fieldMeta)
                             fieldType = fieldMeta.fieldType{fieldIdx};
-                            % Determine if this is a floating-point type (only these need NaN init)
                             isFloat = strcmp(fieldType, 'float32') || strcmp(fieldType, 'float64');
 
                             if isFloat
@@ -1295,24 +1287,22 @@ classdef px4API < handle
                                 arraySize = fieldMeta.arraySize(fieldIdx);
 
                                 if arraySize > 1
-                                    % Handle array fields by looping the macro assignment
                                     for idx = 0:(arraySize-1)
-                                        cppStr = sprintf('%s        msg.%s[%d] = NAN;\n', cppStr, fieldName, idx);
+                                        cppStr = sprintf('%s\t\tmsg.%s[%d] = NAN;\n', cppStr, fieldName, idx);
                                     end
                                 else
-                                    % Single element field assignment
-                                    cppStr = sprintf('%s        msg.%s = NAN;\n', cppStr, fieldName);
+                                    cppStr = sprintf('%s\t\tmsg.%s = NAN;\n', cppStr, fieldName);
                                 end
                             end
                         end
                     end
 
-                    cppStr = sprintf('%s    }\n', cppStr);
-                    cppStr = sprintf('%s    return msg;\n}\n\n', cppStr);
+                    cppStr = sprintf('%s\t}\n', cppStr);
+                    cppStr = sprintf('%s\treturn msg;\n}\n\n', cppStr);
                 end
                 if ~any(strcmp(variants, baseTopic))
                     cppStr = sprintf('%s%s_s init_%s(bool initialize_to_nan) {\n', cppStr, baseTopic, baseTopic);
-                    cppStr = sprintf('%s    return init_%s(initialize_to_nan);\n}\n\n', cppStr, variants{1});
+                    cppStr = sprintf('%s\treturn init_%s(initialize_to_nan);\n}\n\n', cppStr, variants{1});
                 end
             end
 
@@ -1321,7 +1311,7 @@ classdef px4API < handle
             % =========================================================================
             % Close the C linkage block so C++ headers can declare C++ linkage symbols.
             cppStr = sprintf('%s\n} // extern "C"\n\n', cppStr);
-            cppStr = sprintf('%s// --- OPTIMIZED CACHED PARAMETER ACCESS LAYER ---\n', cppStr);
+            cppStr = sprintf('%s// --- NATIVE LIVE PARAMETER SYSTEM BRIDGES ---\n', cppStr);
             cppStr = sprintf('%s#include <parameters/param.h>\n', cppStr); % Native PX4 parameter system header
             cppStr = sprintf('%s\nextern "C" {\n\n', cppStr); % Reopen C linkage for parameter functions
 
@@ -1343,13 +1333,12 @@ classdef px4API < handle
             cppStr = sprintf('%s    return 0;\n}\n\n', cppStr);
 
             % RUNTIME VALIDATION WRITERS
-            % Only update if value actually changed to avoid unnecessary notifications and syncs
             cppStr = sprintf('%s__attribute__((used)) void write_px4_param_float(const char* param_name, float value) {\n', cppStr);
             cppStr = sprintf('%s    param_t handle = param_find(param_name);\n', cppStr);
             cppStr = sprintf('%s    if (handle != PARAM_INVALID && param_type(handle) == PARAM_TYPE_FLOAT) {\n', cppStr);
             cppStr = sprintf('%s        float current_val = 0.0f;\n', cppStr);
             cppStr = sprintf('%s        if (param_get(handle, &current_val) == 0) {\n', cppStr);
-            cppStr = sprintf('%s            if (fabsf(current_val - value) > 1e-6f) {  // FLT_EPSILON-like comparison\n', cppStr);
+            cppStr = sprintf('%s            if (fabsf(current_val - value) > 1e-6f) {\n', cppStr);
             cppStr = sprintf('%s                param_set(handle, &value);\n', cppStr);
             cppStr = sprintf('%s            }\n', cppStr);
             cppStr = sprintf('%s        }\n', cppStr);
@@ -1369,11 +1358,11 @@ classdef px4API < handle
             % Close the C Linkage macro bracket block safely
             cppStr = sprintf('%s}\n', cppStr);
 
-            % Deploy the omnipotent glue to the target output directory layout path
+            % Deploy file
             if ~exist(outputDir, 'dir')
                 mkdir(outputDir);
             end
-            glueFilePath = fullfile(outputDir, 'simulink_io_glue.cpp');
+            glueFilePath = fullfile(outputDir, obj.GlueName);
             fid = fopen(glueFilePath, 'w');
             if fid == -1
                 error('[px4API:Error] Could not write glue file: %s', glueFilePath);
@@ -1381,7 +1370,7 @@ classdef px4API < handle
             fprintf(fid, '%s', cppStr);
             fclose(fid);
             if obj.ShowDebug
-                fprintf('✓ Successfully wrote omnipotent uORB router: %s\n\n', glueFilePath);
+                fprintf('✓ Successfully wrote native PX4 C++ uORB router: %s\n\n', glueFilePath);
             end
         end
     end
@@ -1769,9 +1758,9 @@ classdef px4API < handle
         function generateModelWrapper(modelName, outputDir)
             % Generate a model-agnostic wrapper header for PX4 code.
             %
-            % This wrapper decouples PX4 code from the specific model name,
-            % allowing model renaming without requiring changes to PX4 integration code.
-            % It supports Nonreusable Function (Static Global) code interfaces.
+            % Optimization: Automatically hooks into init_px4_simulink_io() to ensure 
+            % all native PX4 uORB and parameter handles are globally initialized 
+            % before the first model step.
             %
             % Inputs:
             %   modelName - The actual Simulink model name (from buildInfo.ComponentName)
@@ -1808,10 +1797,11 @@ classdef px4API < handle
             wrapperStr = sprintf('%s// Model: %s (Nonreusable / Static Memory footprint)\n', wrapperStr, modelName);
             wrapperStr = sprintf('%s#pragma once\n\n', wrapperStr);
             
-            % Forward-declare Simulink generated functions with C linkage BEFORE including the header.
-            % This forces the C++ compiler to treat the subsequent declarations inside HardwareModel.h
+            % Forward-declare Simulink generated functions and our PX4 glue init with C linkage.
+            % This forces the C++ compiler to treat the subsequent declarations inside the model header
             % as C linkage, preventing name mangling while allowing C++ uORB headers to compile correctly.
             wrapperStr = sprintf('%s#ifdef __cplusplus\nextern "C" {\n#endif\n', wrapperStr);
+            wrapperStr = sprintf('%svoid init_px4_simulink_io(void);\n', wrapperStr);
             wrapperStr = sprintf('%svoid %s_initialize(void);\n', wrapperStr, modelName);
             wrapperStr = sprintf('%svoid %s_step(void);\n', wrapperStr, modelName);
             wrapperStr = sprintf('%s#ifdef __cplusplus\n}\n#endif\n\n', wrapperStr);
@@ -1824,8 +1814,11 @@ classdef px4API < handle
             wrapperStr = sprintf('%sclass SimulinkModel {\n', wrapperStr);
             wrapperStr = sprintf('%spublic:\n', wrapperStr);
             
-            % Map initialization and cyclic loops directly to global static functions
-            wrapperStr = sprintf('%s    void initialize() { %s_initialize(); }\n', wrapperStr, modelName);
+            % Hook global uORB/Parameter initialization directly into the model's initialize sequence
+            wrapperStr = sprintf('%s    void initialize() {\n', wrapperStr);
+            wrapperStr = sprintf('%s        init_px4_simulink_io(); // Initialize native PX4 uORB & param handles\n', wrapperStr);
+            wrapperStr = sprintf('%s        %s_initialize();        // Initialize Simulink generated states\n', wrapperStr, modelName);
+            wrapperStr = sprintf('%s    }\n', wrapperStr);
             wrapperStr = sprintf('%s    void step() { %s_step(); }\n', wrapperStr, modelName);
             
             % --- DYNAMIC HANDLING: Inputs Interface ---

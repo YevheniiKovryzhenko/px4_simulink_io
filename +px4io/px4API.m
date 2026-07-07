@@ -49,352 +49,254 @@
 
 classdef px4API < handle
     properties
-        % ===== USER CONFIGURATION =====
-        % Absolute path to PX4 firmware repository root
         PX4Root = fullfile('~', 'PX4', 'v1.17.0-mod')
-
-        % Name of target PX4 module (directory in src/modules/)
         PX4ModuleName = 'simulink_io'
-
-        % Supported file extensions for export
         AllowedExtensions = {'.c', '.cpp', '.h'}        
-
-        % Enable/disable debug output
-        % Set to false to suppress initialization messages and progress output
-        % Useful when calling px4API() from mask initialization (silent operation)
         ShowDebug = false
     end
 
     properties (Access = private)
-        % ===== INTERNAL CACHE & STATE =====
-        % Absolute path to MATLAB project directory containing this file
         PackageRoot = ''
-
-        % Resolved path to PX4 generated code directory (PX4Root/src/modules/simulink_io/generated_code)
         ResolvedExternalDir = ''
-        
-        % Local directory for generated artifacts
         LocalGeneratedDir = ''
         EnumsDir = '';
-
-        % Name of the generated stub header file
         StubHeaderName = 'px4_simulink_api.h'
         StubSrcName = 'px4_simulink_api.c'
-
         GlueName = 'px4_simulink_glue.cpp'
-
-        % In-memory cache of uORB topic metadata (JSON-serializable struct)
         OrbCache = struct()
-
-        % Flag indicating whether cache has been loaded from disk
         OrbCacheLoaded = false
-
-        % Filename for persistent ORB cache (stored in LocalGeneratedDir)
         OrbCacheFile = 'orb_id_cache.json'
     end
+    
     methods
-        % ========== PUBLIC METHODS ==========
-
         function obj = px4API()
-            % Constructor - Initializes px4API and prepares code generation environment.
-            %
-            % This constructor:
-            %   1. Resolves all paths to absolute locations
-            %   2. Ensures LocalGeneratedDir exists
-            %   3. Regenerates Simulink bus objects in workspace
-            %   4. Auto-regenerates generated code if sources are newer than artifacts
-            %
-            % The generation is incremental - skipped if generated files are newer than
-            % both PX4 messages and generator sources (px4API.m, uORB_*.m).
-
-            % Fetch the full, absolute file system path of this specific script file
-            %    Returns something like: '/path/to/project_root/+px4io/px4API'
             currentFilePath = mfilename('fullpath');
-
-            % Step out of the 'px4API' filename context to find the '+px4io' folder lane
             [obj.PackageRoot, ~, ~] = fileparts(currentFilePath);
-
-            % Enforce absolute resolution for the user-supplied PX4 root folder
             obj.PX4Root = obj.resolveAbsolutePath(obj.PX4Root);
+            obj.ResolvedExternalDir = fullfile(obj.PX4Root, 'src', 'modules', obj.PX4ModuleName, 'generated_code');
 
-            % Compute the exact target folder using native PX4 internal layout
-            obj.ResolvedExternalDir = fullfile(obj.PX4Root, 'src', 'modules', ...
-                                               obj.PX4ModuleName, 'generated_code');
+            if obj.ShowDebug, fprintf('\n--- [px4API] Initializing ---\n'); end            
 
-            if obj.ShowDebug
-                fprintf('\n--- [px4API] Initializing & Scanning PX4 Message Directory ---\n');
-            end            
-
-            % Only regenerate files if needed (timestamp-based check)
             [needsGeneration, generationReason] = obj.needsGeneration();
             if needsGeneration
-                if obj.ShowDebug
-                    fprintf('! Regenerating generated artifacts: %s\n', generationReason);
-                end
+                if obj.ShowDebug, fprintf('! Regenerating: %s\n', generationReason); end
                 obj.generateAllBussesAndHeaders();
             else
-                if obj.ShowDebug
-                    fprintf('✓ Generated artifacts present and up-to-date; skipping file regeneration. (%s)\n', generationReason);
-                end
-                % Load cache from persistent JSON file if it exists
+                if obj.ShowDebug, fprintf('✓ Artifacts up-to-date. (%s)\n', generationReason); end
                 obj.loadOrbCacheFromJson();
-
-                % regenerate bus objects in workspace (they don't persist across clears)
                 obj.regenerateBusesInWorkspace();
             end
         end        
 
         function regenerateBusesInWorkspace(obj)
-            % Regenerate Simulink bus objects and assign to MATLAB base workspace.
-            %
-            % Important: This is ALWAYS called (even on cache hits) because bus objects
-            % are in-memory MATLAB objects and don't persist across workspace clears.
-            % Files are NOT regenerated here - only in-memory objects are created.
-            %
-            % Buses are named <topic_name>_s to match C struct names.
-            %
-            % Errors during bus generation are silently skipped to allow partial
-            % regeneration (e.g., if some topics have syntax issues).
-
-            % Try Loading from json first since it is much faster
             if obj.OrbCacheLoaded && isfield(obj.OrbCache, 'topics') && ~isempty(fieldnames(obj.OrbCache.topics))
-                if obj.ShowDebug
-                    fprintf('Loading Simulink bus types directly from active OrbCache memory structure...\n');
-                end
                 topicsList = fieldnames(obj.OrbCache.topics);
-                busCount = 0;
-                
                 for idx = 1:length(topicsList)
                     tName = topicsList{idx};
-                    nativeStructName = [tName, '_s'];
                     topicData = obj.OrbCache.topics.(tName);
-                    
-                    % Verify that this specific topic data structure contains a 'fields' sub-array
                     if isfield(topicData, 'fields') && ~isempty(topicData.fields)
-                        fieldsData = topicData.fields;
-                        
-                        % Reuse the shared helper to build the bus object directly
-                        busObj = obj.createBusFromFieldData(fieldsData);
-                        if ~isempty(busObj)
-                            assignin('base', nativeStructName, busObj);
-                            busCount = busCount + 1;
-                        end
+                        busObj = obj.createBusFromFieldData(topicData.fields);
+                        if ~isempty(busObj), assignin('base', [tName, '_s'], busObj); end
                     end
-                end
-                
-                if obj.ShowDebug
-                    fprintf('✓ Restored %d Simulink bus types from existing memory cache keys\n', busCount);
-                end
-            else
-                if obj.ShowDebug
-                    fprintf('x No Simulink buses were loaded from cache\n');
                 end
             end
         end
         
-
         function ensureParamBinding(obj, prototypeStr, implStr)
-            % Appends parameter prototype and stub directly to the main API files.
-            % This ensures Simulink's Custom Code parser sees them without needing 
-            % to add extra files to the Simulink Configuration Parameters UI.
-            
             hdrPath = fullfile(obj.LocalGeneratedDir, obj.StubHeaderName);
             srcPath = fullfile(obj.LocalGeneratedDir, obj.StubSrcName);
-            
-            % Ensure files exist (fallback)
-            if ~exist(hdrPath, 'file') || ~exist(srcPath, 'file')
-                obj.generateAllBussesAndHeaders();
-            end
+            if ~exist(hdrPath, 'file') || ~exist(srcPath, 'file'), obj.generateAllBussesAndHeaders(); end
             
             contentH = fileread(hdrPath);
             if ~contains(contentH, prototypeStr)
-                % Wrap in extern "C" to guarantee C-linkage regardless of where it's appended
                 safePrototype = sprintf('#ifdef __cplusplus\nextern "C" {\n#endif\n%s\n#ifdef __cplusplus\n}\n#endif', prototypeStr);
-                fid = fopen(hdrPath, 'a'); % 'a' for append
-                fprintf(fid, '\n%s\n', safePrototype);
-                fclose(fid);
+                fid = fopen(hdrPath, 'a'); fprintf(fid, '\n%s\n', safePrototype); fclose(fid);
             end
 
             contentS = fileread(srcPath);
             if ~contains(contentS, implStr)
-                fid = fopen(srcPath, 'a'); % 'a' for append
-                fprintf(fid, '\n%s\n', implStr);
+                fid = fopen(srcPath, 'a'); fprintf(fid, '\n%s\n', implStr); fclose(fid);
+            end
+        end
+
+        function ensureUorbBinding(obj, baseTopic, selectedTopic)
+            % Dynamically injects uORB topic includes, structs, prototypes, and stubs.
+            % Uses bulletproof string replacement to prevent duplication and structural corruption.
+            
+            msgDir = fullfile(obj.PX4Root, 'msg');
+            msgFiles = dir(fullfile(msgDir, '**', '*.msg'));
+            msgFilePath = '';
+            camelName = '';
+            
+            % 1. Find the .msg file for the base topic
+            for i = 1:length(msgFiles)
+                [~, cName, ~] = fileparts(msgFiles(i).name);
+                if strcmp(obj.camelCaseToSnakeCase(cName), baseTopic)
+                    msgFilePath = fullfile(msgFiles(i).folder, msgFiles(i).name);
+                    camelName = cName;
+                    break;
+                end
+            end
+            
+            if isempty(msgFilePath)
+                warning('[px4API] Could not find .msg file for %s', baseTopic);
+                return;
+            end
+
+            % 2. Generate local struct string and dependencies
+            [localStructStr, ~, deps, ~, ~] = obj.generateBusFromMsg(camelName, baseTopic, msgFilePath);
+            
+            % Recursively gather dependency structs (BFS)
+            allStructs = {baseTopic, localStructStr, deps};
+            queue = deps;
+            
+            while ~isempty(queue)
+                dep = queue{1};
+                queue(1) = [];
+                if ~any(strcmp(allStructs(:,1), dep))
+                    depFilePath = '';
+                    depCamel = '';
+                    for i = 1:length(msgFiles)
+                        [~, cName, ~] = fileparts(msgFiles(i).name);
+                        if strcmp(obj.camelCaseToSnakeCase(cName), dep)
+                            depFilePath = fullfile(msgFiles(i).folder, msgFiles(i).name);
+                            depCamel = cName;
+                            break;
+                        end
+                    end
+                    if ~isempty(depFilePath)
+                        [depStr, ~, depDeps, ~, ~] = obj.generateBusFromMsg(depCamel, dep, depFilePath);
+                        allStructs = [allStructs; {dep, depStr, depDeps}];
+                        queue = [queue, depDeps];
+                    end
+                end
+            end
+            
+            % Topological sort
+            orderedStructs = obj.topologicalSortStructs(allStructs);
+            fullLocalStructStr = '';
+            for i = 1:size(orderedStructs, 1)
+                fullLocalStructStr = sprintf('%s%s\n', fullLocalStructStr, orderedStructs{i, 2});
+            end
+            
+            % 3. Build prototype and impl strings
+            prototypeStr = sprintf('%s_s read_%s(void);\nvoid write_%s(%s_s in);\n%s_s init_%s(bool initialize_to_nan);', ...
+                baseTopic, selectedTopic, selectedTopic, baseTopic, baseTopic, selectedTopic);
+                
+            implStr = sprintf('%s_s read_%s(void) { %s_s empty = {0}; return empty; }\n', baseTopic, selectedTopic, baseTopic);
+            implStr = sprintf('%svoid write_%s(%s_s in) { (void)in; }\n', implStr, selectedTopic, baseTopic);
+            implStr = sprintf('%s%s_s init_%s(bool initialize_to_nan) { %s_s empty = {0}; return empty; }', implStr, baseTopic, selectedTopic, baseTopic);
+
+            % 4. Inject into header and source files using BULLETPROOF string replacement
+            hdrPath = fullfile(obj.LocalGeneratedDir, obj.StubHeaderName);
+            srcPath = fullfile(obj.LocalGeneratedDir, obj.StubSrcName);
+            if ~exist(hdrPath, 'file') || ~exist(srcPath, 'file'), obj.generateAllBussesAndHeaders(); end
+            
+            % --- HEADER INJECTION ---
+            contentH = fileread(hdrPath);
+            
+            % A. PX4 Includes
+            if ~contains(contentH, sprintf('<uORB/topics/%s.h>', baseTopic))
+                px4IncludeStr = sprintf('// --- DYNAMIC PX4 INCLUDES ---\n#include <uORB/topics/%s.h>\ntypedef struct %s_s %s_s;', baseTopic, baseTopic, baseTopic);
+                contentH = strrep(contentH, '// --- DYNAMIC PX4 INCLUDES ---', px4IncludeStr);
+            end
+            
+            % B. Local Structs
+            if ~contains(contentH, sprintf('struct %s_s {', baseTopic))
+                localStructBlock = sprintf('// --- DYNAMIC LOCAL STRUCTS ---\n%s', fullLocalStructStr);
+                contentH = strrep(contentH, '// --- DYNAMIC LOCAL STRUCTS ---', localStructBlock);
+            end
+            
+            % C. Prototypes
+            if ~contains(contentH, sprintf('read_%s(void);', selectedTopic))
+                protoBlock = sprintf('// --- DYNAMIC PROTOTYPES ---\n%s', prototypeStr);
+                contentH = strrep(contentH, '// --- DYNAMIC PROTOTYPES ---', protoBlock);
+            end
+            
+            % Write header back
+            fid = fopen(hdrPath, 'w'); fprintf(fid, '%s', contentH); fclose(fid);
+            
+            % --- SOURCE INJECTION ---
+            contentS = fileread(srcPath);
+            if ~contains(contentS, sprintf('read_%s(void)', selectedTopic))
+                fid = fopen(srcPath, 'a'); 
+                fprintf(fid, '\n%s\n', implStr); 
                 fclose(fid);
             end
         end
 
         function [needed, reason] = needsGeneration(obj)
-            % Determine whether code regeneration is necessary (timestamp-based check).
-            %
-            % Validates folder layouts. If any generated files are missing, it safely
-            % clears the contents of the target directories without deleting the folders 
-            % themselves, avoiding MATLAB path corruption warnings.
-
             needed = true;
-
-            % 1. DEFINE PATH TARGET CONTEXTS RELATIVE TO PACKAGE
             obj.LocalGeneratedDir = fullfile(obj.PackageRoot, 'generated_code');
             obj.EnumsDir = fullfile(obj.PackageRoot, '+enums');
 
-            % 2. ENFORCE NATIVE SELF-HEALING FOLDER STRUCTURE
-            % Ensure physical directories exist. We DO NOT add "+enums" to the MATLAB path.
             if ~exist(obj.LocalGeneratedDir, 'dir') || ~exist(obj.EnumsDir, 'dir')
                 reason = 'mandatory package directories are missing';
-                
-                % Create missing folder spaces safely without deleting existing ones
                 if ~exist(obj.LocalGeneratedDir, 'dir'), mkdir(obj.LocalGeneratedDir); end
                 if ~exist(obj.EnumsDir, 'dir'), mkdir(obj.EnumsDir); end
-                
-                % Only add the local non-package generated directory to the path if missing
-                if isempty(strfind(path(), obj.LocalGeneratedDir))
-                    addpath(obj.LocalGeneratedDir);
-                end
-                return; % Exit early to trigger immediate clean file generation pass
+                if isempty(strfind(path(), obj.LocalGeneratedDir)), addpath(obj.LocalGeneratedDir); end
+                return; 
             end
+            if isempty(strfind(path(), obj.LocalGeneratedDir)), addpath(obj.LocalGeneratedDir); end
 
-            % Ensure the regular generated code directory is on the path
-            if isempty(strfind(path(), obj.LocalGeneratedDir))
-                addpath(obj.LocalGeneratedDir);
-            end
-
-            % 3. RUN ARCHITECTURAL BASELINE FILE CHECKS
             hdrPath = fullfile(obj.LocalGeneratedDir, obj.StubHeaderName);
             srcPath = fullfile(obj.LocalGeneratedDir, obj.StubSrcName);
             checkPath = fullfile(obj.LocalGeneratedDir, obj.OrbCacheFile);
 
             if ~(exist(hdrPath, 'file') == 2 && exist(srcPath, 'file') == 2 && exist(checkPath, 'file') == 2)
                 reason = 'one or more generated source files are missing';
-                
-                % SAFE PURGE: Erase ONLY the files inside, leaving folder links completely locked
-                % This prevents MATLAB path removal warnings.
-                obj.clearFolderContents(obj.LocalGeneratedDir);
-                obj.clearFolderContents(obj.EnumsDir);
+                obj.clearFolderContents(obj.LocalGeneratedDir); obj.clearFolderContents(obj.EnumsDir);
                 return;
             end
 
             msgDir = fullfile(obj.PX4Root, 'msg');
-            if ~exist(msgDir, 'dir')
-                reason = 'PX4 msg directory is missing';
-                return;
-            end
+            if ~exist(msgDir, 'dir'), reason = 'PX4 msg directory is missing'; return; end
 
-            % 4. CAPTURE MODIFICATION TIMESTAMPS
             msgFiles = dir(fullfile(msgDir, '**', '*.msg'));
-            if isempty(msgFiles)
-                needed = false;
-                reason = 'no PX4 .msg files were found';
-                return;
-            end
+            if isempty(msgFiles), needed = false; reason = 'no PX4 .msg files were found'; return; end
             
-            % Exclude px4_msgs_old folder trees from timestamp checks
-            excludePattern = [filesep 'px4_msgs_old']; 
-            isOldMessage = contains({msgFiles.folder}, excludePattern);
-            msgFiles(isOldMessage) = [];
-            
+            msgFiles(contains({msgFiles.folder}, [filesep 'px4_msgs_old'])) = [];
             newestMsg = max([msgFiles(:).datenum]);
 
-            hdrInfo = dir(hdrPath);
-            srcInfo = dir(srcPath);
-            glueInfo = dir(checkPath);
-            hdrTime = hdrInfo.datenum;
-            srcTime = srcInfo.datenum;
-            glueTime = glueInfo.datenum;
+            hdrTime = dir(hdrPath).datenum; srcTime = dir(srcPath).datenum; glueTime = dir(checkPath).datenum;
 
-            generatorTimes = [];
-            generatorFiles = {
-                fullfile(obj.PackageRoot, 'px4API.m')
-                fullfile(obj.PackageRoot, 'uORB_read.m')
-                fullfile(obj.PackageRoot, 'uORB_write.m')
-                fullfile(obj.PackageRoot, 'uORB_msg.m')
-                fullfile(obj.PackageRoot, 'uORB_time.m')
-            };
+            generatorFiles = {fullfile(obj.PackageRoot, 'px4API.m'), fullfile(obj.PackageRoot, 'uORB_read.m'), ...
+                              fullfile(obj.PackageRoot, 'uORB_write.m'), fullfile(obj.PackageRoot, 'uORB_msg.m')};
+            genTimes = [];
             for i = 1:numel(generatorFiles)
-                filePath = generatorFiles{i};
-                if exist(filePath, 'file') == 2
-                    info = dir(filePath);
-                    if ~isempty(info)
-                        generatorTimes(end+1) = info(1).datenum; %#ok<AGROW>
-                    end
-                end
+                if exist(generatorFiles{i}, 'file') == 2, genTimes(end+1) = dir(generatorFiles{i}).datenum; end
             end
-            
-            if isempty(generatorTimes)
-                newestGeneratorTime = -inf;
-            else
-                newestGeneratorTime = max(generatorTimes);
-            end
+            newestGenTime = max([genTimes, -inf]);
 
-            % 5. DYNAMIC EVALUATION DECISION LOOP
-            newestDependencyTime = max(newestMsg, newestGeneratorTime);
-            if hdrTime >= newestDependencyTime && srcTime >= newestDependencyTime && glueTime >= newestDependencyTime
-                needed = false;
-                reason = 'generated files are newer than PX4 messages and generator sources';
+            if max([hdrTime, srcTime, glueTime]) >= max(newestMsg, newestGenTime)
+                needed = false; reason = 'generated files are newer';
             else
-                needed = true;
-                reason = 'PX4 messages or generator sources are newer than generated files';
-                
-                % Safe incremental pre-clear before regeneration
-                obj.clearFolderContents(obj.LocalGeneratedDir);
-                obj.clearFolderContents(obj.EnumsDir);
+                reason = 'dependencies are newer';
+                obj.clearFolderContents(obj.LocalGeneratedDir); obj.clearFolderContents(obj.EnumsDir);
             end
         end
 
         function clearFolderContents(~, folderPath)
-            % Sweeps a target directory and safely deletes only files and sub-items 
-            % while keeping the parent directory handle intact to prevent path warnings.
             if exist(folderPath, 'dir') == 7
                 items = dir(folderPath);
                 for i = 1:length(items)
-                    itemName = items(i).name;
-                    % Skip current directory (.) and parent directory (..) references
-                    if strcmp(itemName, '.') || strcmp(itemName, '..'), continue; end
-
-                    fullItemPath = fullfile(items(i).folder, itemName);
-                    if items(i).isdir
-                        rmdir(fullItemPath, 's'); % Safely remove nested subdirs if any exist
-                    else
-                        delete(fullItemPath);     % Erase file entry directly
-                    end
+                    if strcmp(items(i).name, '.') || strcmp(items(i).name, '..'), continue; end
+                    fullItemPath = fullfile(items(i).folder, items(i).name);
+                    if items(i).isdir, rmdir(fullItemPath, 's'); else delete(fullItemPath); end
                 end
             end
         end
 
-
         function fieldMetadata = getFieldMetadataFromCache(obj, topicName)
-            % Retrieve field metadata for a topic from the persistent JSON cache.
-            %
-            % Returns a table with columns:
-            %   - fieldName (string): C field name
-            %   - fieldType (string): PX4 type (e.g., 'float32', 'int32')
-            %   - arraySize (numeric): 1 for scalar, >1 for arrays
-            %
-            % Input:
-            %   topicName - Topic name in snake_case
-            %
-            % Output:
-            %   fieldMetadata - Table (empty if topic not in cache)
-            %
-            % Usage: Used by init_* and generate C code to set NaN on float fields
-
             fieldMetadata = table();
-
             if isfield(obj.OrbCache, 'topics') && isfield(obj.OrbCache.topics, topicName)
                 topicEntry = obj.OrbCache.topics.(topicName);
                 if isfield(topicEntry, 'fields')
                     fieldsArray = topicEntry.fields;
-                    if iscell(fieldsArray)
-                        fieldsArray = fieldsArray{1};  % Unwrap cell if needed
-                    end
-                    if isstruct(fieldsArray)
-                        if isempty(fieldsArray)
-                            return;
-                        end
-                        fieldNames = {fieldsArray(:).name};
-                        fieldTypes = {fieldsArray(:).type};
-                        arraySizes = [fieldsArray(:).arraySize];
-
-                        fieldMetadata = table(fieldNames', fieldTypes', arraySizes', ...
-                            'VariableNames', {'fieldName', 'fieldType', 'arraySize'});
+                    if iscell(fieldsArray), fieldsArray = fieldsArray{1}; end
+                    if isstruct(fieldsArray) && ~isempty(fieldsArray)
+                        fieldMetadata = table({fieldsArray(:).name}', {fieldsArray(:).type}', ...
+                            [fieldsArray(:).arraySize]', 'VariableNames', {'fieldName', 'fieldType', 'arraySize'});
                     end
                 end
             end
@@ -402,9 +304,8 @@ classdef px4API < handle
 
         function variants = getTopicVariants(obj, topicName)
             % Return the set of actual uORB topic IDs for a message base or variant.
-            %
-            % If no TOPICS metadata is present, the returned list is the requested topic name.
-            variants = {topicName};
+            variants = {topicName}; % Default fallback is a cell array
+            
             if ~isfield(obj.OrbCache, 'topics')
                 return;
             end
@@ -414,373 +315,195 @@ classdef px4API < handle
                 if isfield(entry, 'variants') && ~isempty(entry.variants)
                     variants = entry.variants;
                 end
-                return;
+            else
+                % If the input is itself a variant name, return all variants of its base message.
+                topicKeys = fieldnames(obj.OrbCache.topics);
+                for i = 1:length(topicKeys)
+                    baseName = topicKeys{i};
+                    entry = obj.OrbCache.topics.(baseName);
+                    if isfield(entry, 'variants')
+                        v = entry.variants;
+                        if (ischar(v) && strcmp(v, topicName)) || (iscell(v) && any(strcmp(v, topicName)))
+                            variants = v;
+                            break;
+                        end
+                    end
+                end
             end
-
-            % If the input is itself a variant name, return all variants of its base message.
-            topicKeys = fieldnames(obj.OrbCache.topics);
-            for i = 1:length(topicKeys)
-                baseName = topicKeys{i};
-                entry = obj.OrbCache.topics.(baseName);
-                if isfield(entry, 'variants') && any(strcmp(entry.variants, topicName))
-                    variants = entry.variants;
-                    return;
+            
+            if ischar(variants) || isstring(variants)
+                variants = {variants};
+            elseif iscell(variants)
+                variants = variants(~cellfun(@isempty, variants));
+                if isempty(variants)
+                    variants = {topicName};
                 end
             end
         end
 
         function baseTopic = getBaseTopicForVariant(obj, topicName)
-            % Map a variant topic name back to its base message topic name.
             baseTopic = topicName;
-            if ~isfield(obj.OrbCache, 'topics')
-                return;
-            end
-
-            if isfield(obj.OrbCache.topics, topicName)
-                return;
-            end
-
-            topicKeys = fieldnames(obj.OrbCache.topics);
-            for i = 1:length(topicKeys)
-                key = topicKeys{i};
-                entry = obj.OrbCache.topics.(key);
-                if isfield(entry, 'variants') && any(strcmp(entry.variants, topicName))
-                    baseTopic = key;
-                    return;
+            if isfield(obj.OrbCache, 'topics')
+                if isfield(obj.OrbCache.topics, topicName), return; end
+                for key = fieldnames(obj.OrbCache.topics)'
+                    entry = obj.OrbCache.topics.(key{1});
+                    if isfield(entry, 'variants') && any(strcmp(entry.variants, topicName))
+                        baseTopic = key{1}; return;
+                    end
                 end
             end
         end
 
         function saveOrbCache(obj)
-            % Save ORB cache to disk as JSON.
-            %
-            % Format:
-            %   {
-            %     "timestamp": "ISO8601 timestamp",
-            %     "topics": {
-            %       "topic_name": {
-            %         "fields": [
-            %           {"name": "field1", "type": "float32", "arraySize": 1},
-            %           ...
-            %         ]
-            %       },
-            %       ...
-            %     }
-            %   }
-            %
-            % Errors during save are silently ignored.
-
-            if ~exist(obj.LocalGeneratedDir, 'dir')
-                mkdir(obj.LocalGeneratedDir);
-            end
+            if ~exist(obj.LocalGeneratedDir, 'dir'), mkdir(obj.LocalGeneratedDir); end
             cachePath = fullfile(obj.LocalGeneratedDir, obj.OrbCacheFile);
-            % Ensure cache has timestamp and topics structure
-            if ~isfield(obj.OrbCache, 'timestamp')
-                obj.OrbCache.timestamp = datetime('now', 'Format', 'yyyy-MM-dd''T''HH:mm:ss''Z''');
-            end
-            if ~isfield(obj.OrbCache, 'topics')
-                obj.OrbCache.topics = struct();
-            end
-
+            if ~isfield(obj.OrbCache, 'timestamp'), obj.OrbCache.timestamp = datetime('now'); end
+            if ~isfield(obj.OrbCache, 'topics'), obj.OrbCache.topics = struct(); end
             fid = fopen(cachePath, 'w');
-            if fid ~= -1
-                % Pretty-print JSON for human readability
-                jsonStr = jsonencode(obj.OrbCache, 'PrettyPrint', true);
-                fprintf(fid, '%s', jsonStr);
-                fclose(fid);
-            end
+            if fid ~= -1, fprintf(fid, '%s', jsonencode(obj.OrbCache, 'PrettyPrint', true)); fclose(fid); end
         end
 
         function loadOrbCacheFromJson(obj)
-            % Load ORB cache from persistent JSON file if it exists.
-            %
-            % Called when generated files are up-to-date to restore the in-memory cache
-            % without rebuilding from source messages. This preserves variant metadata
-            % and field information.
-            %
-            % Errors during load are silently ignored; cache remains empty.
-
             cachePath = fullfile(obj.LocalGeneratedDir, obj.OrbCacheFile);
-            if ~exist(cachePath, 'file')
-                return;  % No cache file to load
-            end
-
-            jsonStr = fileread(cachePath);
-            obj.OrbCache = jsondecode(jsonStr);
-            % Ensure topics field exists even if JSON is empty/malformed
-            if ~isfield(obj.OrbCache, 'topics')
-                obj.OrbCache.topics = struct();
-            end
+            if ~exist(cachePath, 'file'), return; end
+            obj.OrbCache = jsondecode(fileread(cachePath));
+            if ~isfield(obj.OrbCache, 'topics'), obj.OrbCache.topics = struct(); end
             obj.OrbCacheLoaded = true;
         end
 
         function generateAllBussesAndHeaders(obj)
-            % Generate Simulink bus definitions and C++ stub headers for all messages.
-            %
-            % This is the first major code generation pipeline stage.
-            % Creates:
-            %   1. px4_simulink_api.h - C prototypes for all topics (read/write/init functions)
-            %   2. px4_simulink_api.c - C source stubs (for local desktop simulation linking)
-            %   3. ORB cache update - Field metadata for all topics (used by NaN init code)
+            % Scans all PX4 messages and generates a complete, static API header and source file.
+            % This runs ONCE. Masks will only morph the UI, never touch the files.
             
             msgDir = fullfile(obj.PX4Root, 'msg');
-            if ~exist(msgDir, 'dir')
-                error('[px4API:Error] Could not find PX4 msg directory at: %s', msgDir);
-            end
+            if ~exist(msgDir, 'dir'), error('[px4API:Error] Missing msg dir'); end
 
-            % Scans ALL subdirectories recursively to catch versioned or hidden messages.
             rawMsgFiles = dir(fullfile(msgDir, '**', '*.msg'));
+            rawMsgFiles(contains({rawMsgFiles.folder}, [filesep 'px4_msgs_old'])) = []; 
 
-            % Filter out files residing inside the 'px4_msgs_old' directory tree.
-            % We look for both forward and backslashes to ensure it works on Linux/Ubuntu and Windows.
-            excludePattern = [filesep 'px4_msgs_old']; 
-            isOldMessage = contains({rawMsgFiles.folder}, excludePattern);
-            rawMsgFiles(isOldMessage) = []; % Deletes matching stale entries instantly
-
-            % Deduplicate by topic name to keep the first matching profile per topic.
-            msgFiles = [];
-            processedTopics = {};
+            msgFiles = []; processedTopics = {};
             for idx = 1:length(rawMsgFiles)
                 [~, camelName, ~] = fileparts(rawMsgFiles(idx).name);
                 topicName = obj.camelCaseToSnakeCase(camelName);
                 if ~any(strcmp(processedTopics, topicName))
-                    processedTopics{end+1} = topicName; %#ok<AGROW>
-                    msgFiles = [msgFiles; rawMsgFiles(idx)]; %#ok<AGROW>
+                    processedTopics{end+1} = topicName; 
+                    msgFiles = [msgFiles; rawMsgFiles(idx)];
                 end
             end
 
-            if obj.ShowDebug
-                fprintf('Found %d total unique message profiles across all subfolders. Generating Simulink Buses...\n', length(msgFiles));
-            end
+            if ~isfield(obj.OrbCache, 'topics'), obj.OrbCache.topics = struct(); end
+            allStructs = {}; busAssignments = {};
 
-            % PASS 1: Collect all struct definitions and build comprehensive metadata cache
-            allStructs = {};  % Will store {topicName, structStr, dependencies} triplets
-            busAssignments = {};  % Will store Simulink bus assignments
-
-            % Initialize the comprehensive cache structure
-            if ~isfield(obj.OrbCache, 'topics')
-                obj.OrbCache.topics = struct();
-            end
-
+            % 1. Parse all messages and build dependency graph
             for i = 1:length(msgFiles)
                 msgFilePath = fullfile(msgFiles(i).folder, msgFiles(i).name);
                 [~, camelName, ~] = fileparts(msgFiles(i).name);
-                topicName = obj.camelCaseToSnakeCase(camelName);  % Convert to snake_case
-
+                topicName = obj.camelCaseToSnakeCase(camelName);  
                 try
                     [structString, busObj, deps, fieldMeta, topicVariants] = obj.generateBusFromMsg(camelName, topicName, msgFilePath);
                     if ~isempty(structString)
-                        allStructs{end+1, 1} = topicName; %#ok<AGROW>
+                        allStructs{end+1, 1} = topicName; 
                         allStructs{end, 2} = structString; 
-                        allStructs{end, 3} = deps; 
+                        allStructs{end, 3} = deps;
                         if ~isempty(busObj)
-                            busAssignments{end+1, 1} = topicName; %#ok<AGROW>
+                            busAssignments{end+1, 1} = topicName; 
                             busAssignments{end, 2} = busObj; 
                         end
-
-                        % Preserve variant metadata and field metadata in the persistent cache.
-                        if isempty(topicVariants)
-                            topicVariants = {topicName};
-                        end
-
-                        existingEntry = struct();
-                        if isfield(obj.OrbCache.topics, topicName)
-                            existingEntry = obj.OrbCache.topics.(topicName);
-                        end
-
-                        % Store variants as cell array of strings
-                        topicEntry = struct();
-                        topicEntry.variants = topicVariants;
+                        
+                        if isempty(topicVariants), topicVariants = {topicName}; end
+                        topicEntry = struct('variants', topicVariants);
                         if ~isempty(fieldMeta) && height(fieldMeta) > 0
-                            % Convert field metadata table to JSON-serializable array of structs
                             fieldsArray = {};
                             for fIdx = 1:height(fieldMeta)
-                                fieldsArray{end+1} = struct( ...
-                                    'name', fieldMeta.fieldName{fIdx}, ...
-                                    'type', fieldMeta.fieldType{fIdx}, ...
-                                    'arraySize', fieldMeta.arraySize(fIdx) ...
-                                ); %#ok<AGROW>
+                                fieldsArray{end+1} = struct('name', fieldMeta.fieldName{fIdx}, ...
+                                    'type', fieldMeta.fieldType{fIdx}, 'arraySize', fieldMeta.arraySize(fIdx));
                             end
                             topicEntry.fields = {fieldsArray};
-                        end
-
-                        if isfield(existingEntry, 'orb_id')
-                            topicEntry.orb_id = existingEntry.orb_id;
                         end
                         obj.OrbCache.topics.(topicName) = topicEntry;
                     end
                 catch ME
-                    if obj.ShowDebug
-                        fprintf('! Skipping/Error in message [%s]: %s\n', topicName, ME.message);
-                    end
+                    if obj.ShowDebug, fprintf('! Skipping %s: %s\n', topicName, ME.message); end
                 end
             end
 
-            % PASS 2: Build header with forward declarations and definitions
-            headerStr = sprintf('// Auto-generated by px4API for strongly-typed Simulink C Caller blocks\n');
-            headerStr = sprintf('%s#ifndef PX4_SIMULINK_API_H\n#define PX4_SIMULINK_API_H\n\n', headerStr);
-            headerStr = sprintf('%s#include <stdint.h>\n#include <stdbool.h>\n\n', headerStr);
+            % Topological sort for local structs to prevent incomplete type errors
+            if ~isempty(allStructs), allStructs = obj.topologicalSortStructs(allStructs); end
 
-            % --- TYPE DEFINITION STRATEGY ---
-            % For PX4 builds: Include the authentic, native uORB topic message headers directly!
-            % For local simulation: use our generated mockup struct definitions
-            headerStr = sprintf('%s#if defined(__PX4_NUTTX) || defined(__PX4_POSIX) || defined(__PX4_QURT) || defined(__PX4_CYGWIN)\n', headerStr);
-            headerStr = sprintf('%s// PX4 Live Build: Pull real uORB architecture definitions directly from source tree\n', headerStr);
-            
-            if ~isempty(allStructs)
-                % PASS 1: Include all uORB headers first
-                for i = 1:size(allStructs, 1)
-                    topicName = allStructs{i, 1};
-                    headerStr = sprintf('%s#include <uORB/topics/%s.h>\n', headerStr, topicName);
-                end
-                
-                % Add a blank line for readability between includes and typedefs
-                headerStr = sprintf('%s\n', headerStr);
-                
-                % PASS 2: Emit all typedefs to bridge PX4 named structs with Simulink expected typedefs
-                for i = 1:size(allStructs, 1)
-                    topicName = allStructs{i, 1};
-                    headerStr = sprintf('%stypedef struct %s_s %s_s;\n', headerStr, topicName, topicName);
-                end
-            end
+            % --- BUILD HEADER ---
+            h = sprintf('// Auto-generated by px4API\n#ifndef PX4_SIMULINK_API_H\n#define PX4_SIMULINK_API_H\n\n');
+            h = sprintf('%s#include <stdint.h>\n#include <stdbool.h>\n\n', h);
 
-            headerStr = sprintf('%s#else\n', headerStr);
-            headerStr = sprintf('%s// Local Simulation: use generated forward declarations and mockup definitions\n\n', headerStr);
-
-            % Inject clean forward tags strictly for local desktop engine usage
-            if ~isempty(allStructs)
-                for i = 1:size(allStructs, 1)
-                    topicName = allStructs{i, 1};
-                    headerStr = sprintf('%sstruct %s_s;\n', headerStr, topicName);
-                end
-                headerStr = sprintf('%s\n', headerStr);
-            end
-
-            % Sort and append structural layouts for local simulation execution paths
-            if ~isempty(allStructs)
-                allStructs = obj.topologicalSortStructs(allStructs);
-            end
+            % PX4 Hardware/SITL: Use native uORB headers
+            h = sprintf('%s#if defined(__PX4_NUTTX) || defined(__PX4_POSIX) || defined(__PX4_QURT) || defined(__PX4_CYGWIN)\n', h);
             for i = 1:size(allStructs, 1)
-                headerStr = sprintf('%s%s\n', headerStr, allStructs{i, 2});
+                h = sprintf('%s#include <uORB/topics/%s.h>\n', h, allStructs{i, 1});
             end
+            h = sprintf('%s\n', h);
+            for i = 1:size(allStructs, 1)
+                h = sprintf('%stypedef struct %s_s %s_s;\n', h, allStructs{i, 1}, allStructs{i, 1});
+            end
+            
+            % Local Desktop Simulation: Use generated mockup structs
+            h = sprintf('%s#else\n', h);
+            for i = 1:size(allStructs, 1)
+                h = sprintf('%s%s\n', h, allStructs{i, 2});
+            end
+            h = sprintf('%s#endif\n\n', h);
 
-            headerStr = sprintf('%s#endif  // End PX4 vs Local isolation layer\n\n', headerStr);
-
-            % Establish clean, global C-linkage scope bounds for all function prototypes
-            headerStr = sprintf('%s#ifdef __cplusplus\nextern "C" {\n#endif\n\n', headerStr);
-            headerStr = sprintf('%s// --- STRONGLY-TYPED RETURN-BY-VALUE PROTOTYPES FOR C CALLER ---\n', headerStr);
-
-            srcStr = sprintf('#include "%s"\n', obj.StubHeaderName);
-            srcStr = sprintf('%s#include <math.h> // Required for NAN macro in parameter stubs\n\n', srcStr);
-
-            % Write clean function signatures using the unified typedef
+            % C-Linkage Prototypes
+            h = sprintf('%s#ifdef __cplusplus\nextern "C" {\n#endif\n\n', h);
             for i = 1:length(msgFiles)
                 [~, camelName, ~] = fileparts(msgFiles(i).name);
                 topicName = obj.camelCaseToSnakeCase(camelName);
+                h = sprintf('%s%s_s read_%s(void);\n', h, topicName, topicName);
+                h = sprintf('%svoid write_%s(%s_s in);\n', h, topicName, topicName);
+                h = sprintf('%s%s_s init_%s(bool initialize_to_nan);\n', h, topicName, topicName);
+            end
+            h = sprintf('%suint64_t read_px4_system_time(void);\n\n', h);
+            h = sprintf('%s#ifdef __cplusplus\n}\n#endif\n\n#endif // PX4_SIMULINK_API_H\n', h);
 
-                % 1. Reader Prototype & Mock Source (No inline extern "C" needed)
-                headerStr = sprintf('%s%s_s read_%s(void);\n', headerStr, topicName, topicName);
-                srcStr = sprintf('%s%s_s read_%s(void) { %s_s empty = {0}; return empty; }\n', srcStr, topicName, topicName, topicName);
-
-                % 2. Writer Prototype & Mock Source
-                headerStr = sprintf('%svoid write_%s(%s_s in);\n', headerStr, topicName, topicName);
-                srcStr = sprintf('%svoid write_%s(%s_s in) {}\n', srcStr, topicName, topicName);
-
-                % 3. Dynamic Message Initialization Prototype & Mock Source
-                headerStr = sprintf('%s%s_s init_%s(bool initialize_to_nan);\n', headerStr, topicName, topicName);
-                srcStr = sprintf('%s%s_s init_%s(bool initialize_to_nan) { %s_s empty = {0}; return empty; }\n', srcStr, topicName, topicName, topicName);
+            % --- BUILD SOURCE (Desktop stubs only) ---
+            % Note: NO #if guards here. Simulink's parser gets confused by them.
+            % This file is excluded from PX4 builds anyway via copyGeneratedCodeFiles.
+            s = sprintf('#include "%s"\n#include <math.h>\n\n', obj.StubHeaderName);
+            s = sprintf('%suint64_t read_px4_system_time(void) { return 0; }\n\n', s);
+            
+            for i = 1:length(msgFiles)
+                [~, camelName, ~] = fileparts(msgFiles(i).name);
+                topicName = obj.camelCaseToSnakeCase(camelName);
+                s = sprintf('%s%s_s read_%s(void) { %s_s empty = {0}; return empty; }\n', s, topicName, topicName, topicName);
+                s = sprintf('%svoid write_%s(%s_s in) { (void)in; }\n', s, topicName, topicName);
+                s = sprintf('%s%s_s init_%s(bool initialize_to_nan) { %s_s empty = {0}; return empty; }\n\n', s, topicName, topicName, topicName);
             end
 
-            % Append a strongly-typed, zero-input function that returns system time by value
-            headerStr = sprintf('%s\n// --- NATIVE HIGH-RESOLUTION SYSTEM CLOCK INTERFACES ---\n', headerStr);
-            headerStr = sprintf('%suint64_t read_px4_system_time(void);\n', headerStr);
-            srcStr = sprintf('%suint64_t read_px4_system_time(void) { return 0; }\n', srcStr);
-
-            headerStr = sprintf('%s\n#ifdef __cplusplus\n}\n#endif\n\n#endif // PX4_SIMULINK_API_H\n', headerStr);
-
-            % 1. Write out the single combined stub header file locally
-            if ~exist(obj.LocalGeneratedDir, 'dir')
-                mkdir(obj.LocalGeneratedDir);
-            end
-            headerFilePath = fullfile(obj.LocalGeneratedDir, obj.StubHeaderName);
-            fid = fopen(headerFilePath, 'w');
-            if fid == -1
-                error('[px4API:Error] Could not write header file: %s', headerFilePath);
-            end
-            fprintf(fid, '%s', headerStr);
-            fclose(fid);
-            if obj.ShowDebug
-                fprintf('✓ Successfully synchronized concrete header: %s\n', obj.StubHeaderName);
-            end
-
-            % 2. Write out the matching strongly-typed source stubs file locally
-            srcFilePath = fullfile(obj.LocalGeneratedDir, obj.StubSrcName);
-            fid = fopen(srcFilePath, 'w');
-            if fid == -1
-                error('[px4API:Error] Could not write source file: %s', srcFilePath);
+            % Write files to disk
+            if ~exist(obj.LocalGeneratedDir, 'dir'), mkdir(obj.LocalGeneratedDir); end
+            fid = fopen(fullfile(obj.LocalGeneratedDir, obj.StubHeaderName), 'w'); fprintf(fid, '%s', h); fclose(fid);
+            fid = fopen(fullfile(obj.LocalGeneratedDir, obj.StubSrcName), 'w'); fprintf(fid, '%s', s); fclose(fid);
+            
+            % Assign buses to workspace
+            for i = 1:size(busAssignments, 1)
+                assignin('base', [busAssignments{i, 1}, '_s'], busAssignments{i, 2});
             end
             
-            % Write srcStr directly to the file
-            fprintf(fid, '%s', srcStr);
-            fclose(fid);
-            if obj.ShowDebug
-                fprintf('✓ Successfully generated source stubs for C Caller: %s\n', obj.StubSrcName);
-            end
-
-            % 3. Assign all Simulink bus objects to the workspace
-            for i = 1:size(busAssignments, 1)
-                topicName = busAssignments{i, 1};
-                busObj = busAssignments{i, 2};
-                nativeStructName = [topicName, '_s'];
-                assignin('base', nativeStructName, busObj);
-            end
-
-            if obj.ShowDebug
-                fprintf('--- [px4API] System Ready for Simulink Modelling ---\n\n');
-            end
-
-            % Persist the comprehensive cache to JSON
             obj.saveOrbCache();
+            if obj.ShowDebug, fprintf('✓ Full static API generated.\n'); end
         end
 
-
         function typeSize = getPx4FieldTypeSize(~, px4Type)
-            % Match PX4 uORB layout ordering rules for struct packing.
             switch lower(px4Type)
-                case {'uint64','int64','float64'}
-                    typeSize = 8;
-                case {'uint32','int32','float32'}
-                    typeSize = 4;
-                case {'uint16','int16'}
-                    typeSize = 2;
-                case {'uint8','int8','bool','char'}
-                    typeSize = 1;
-                otherwise
-                    typeSize = 0;
+                case {'uint64','int64','float64'}, typeSize = 8;
+                case {'uint32','int32','float32'}, typeSize = 4;
+                case {'uint16','int16'}, typeSize = 2;
+                case {'uint8','int8','bool','char'}, typeSize = 1;
+                otherwise, typeSize = 0;
             end
         end
 
         function [structStr, busObj, dependencies, fieldMetadata, topicVariants] = generateBusFromMsg(obj, camelName, topicName, msgFilePath)
-            % Generate Simulink bus structure from PX4 .msg file
-            % Returns: structStr (C struct definition), busObj (Simulink bus), dependencies (list of required structs)
-            %          fieldMetadata (table of field info: fieldName, fieldType, arraySize)
-            %          topicVariants (cell array of PX4 topic IDs declared by the message)
-            % camelName: original CamelCase filename (used to open the file)
-            % topicName: snake_case topic name (used for struct naming)
-            % msgFilePath: fully-qualified path to the discovered .msg file when scanning subfolders
-            %
-            % If called with single argument (legacy), assume input is already camelName
-            if nargin == 2
-                topicName = obj.camelCaseToSnakeCase(camelName);
-                msgFilePath = '';
-            end
-
-            structStr = '';
-            busObj = [];
-            dependencies = {};
-            fieldMetadata = table();  % Initialize empty table for field metadata
-
-            % Open the discovered file path when available; otherwise fall back to a recursive search.
+            if nargin == 2, topicName = obj.camelCaseToSnakeCase(camelName); msgFilePath = ''; end
+            structStr = ''; busObj = []; dependencies = {}; fieldMetadata = table(); topicVariants = {};
             if nargin < 4 || isempty(msgFilePath)
                 msgFilePath = fullfile(obj.PX4Root, 'msg', [camelName, '.msg']);
                 if exist(msgFilePath, 'file') ~= 2
@@ -788,663 +511,308 @@ classdef px4API < handle
                     for fallbackIdx = 1:length(fallbackFiles)
                         [~, fallbackCamelName, ~] = fileparts(fallbackFiles(fallbackIdx).name);
                         if strcmp(fallbackCamelName, camelName)
-                            msgFilePath = fullfile(fallbackFiles(fallbackIdx).folder, fallbackFiles(fallbackIdx).name);
-                            break;
+                            msgFilePath = fullfile(fallbackFiles(fallbackIdx).folder, fallbackFiles(fallbackIdx).name); break;
                         end
                     end
                 end
             end
             fid = fopen(msgFilePath, 'r');
-            if fid == -1
-                error('[px4API:Error] Could not open message file: %s', msgFilePath);
-            end
-            fileData = textscan(fid, '%s', 'Delimiter', '\n');
-            fclose(fid);
-            lines = fileData{1};
+            if fid == -1, error('[px4API:Error] Could not open message file: %s', msgFilePath); end
+            lines = textscan(fid, '%s', 'Delimiter', '\n'); fclose(fid); lines = lines{1};
 
-            elements = [];
             structBody = sprintf('struct %s_s {\n', topicName);
-            parsedFields = {};
-
-            % Track message variant names from PX4 "#TOPICS" metadata (if present)
-            topicVariants = {};
-
-            % Temporary array block to collect dynamic constant configurations
-            constantsList = {}; 
-
-            % Initialize arrays to store field metadata
-            fieldNames = {};
-            fieldTypes = {};
-            arraySizes = [];
+            parsedFields = {}; constantsList = {}; fieldNames = {}; fieldTypes = {}; arraySizes = [];
 
             for i = 1:length(lines)
                 line = strtrim(lines{i});
                 if startsWith(line, '#')
-                    % Extract topic variants from a TOPICS metadata comment
-                    stripped = regexprep(line, '^#\s*', '');
-                    toks = strsplit(strtrim(stripped));
+                    stripped = regexprep(line, '^#\s*', ''); toks = strsplit(strtrim(stripped));
                     if ~isempty(toks) && strcmpi(toks{1}, 'TOPICS')
-                        newVariants = toks(2:end);
-                        newVariants = newVariants(~cellfun(@isempty, newVariants));
-                        topicVariants = [topicVariants, newVariants]; %#ok<AGROW>
+                        topicVariants = [topicVariants, toks(2:end)];
                     end
                     continue;
                 end
-
                 commentIdx = strfind(line, '#');
-                if ~isempty(commentIdx)
-                    line = strtrim(line(1:commentIdx(1)-1));
-                end
-
-                % Looks for value assignments like: uint8 ACTION_ARM = 1
+                if ~isempty(commentIdx), line = strtrim(line(1:commentIdx(1)-1)); end
                 if contains(line, '=')
                     tokens = strsplit(line, '=');
                     if length(tokens) >= 2
-                        leftSide = strtrim(tokens{1});
-                        rightSide = strtrim(tokens{2});
-                        
-                        % Split type from name on the left side (e.g. "uint8 ACTION_ARM")
-                        typeAndName = strsplit(leftSide);
+                        typeAndName = strsplit(strtrim(tokens{1}));
                         if length(typeAndName) >= 2
-                            constName = typeAndName{2};
-                            constVal = rightSide;
-                            
-                            % Strip trailing semicolons if present in metadata configs
-                            if endsWith(constVal, ';'), constVal = constVal(1:end-1); end
-                            
-                            constantsList{end+1, 1} = constName; %#ok<AGROW>
-                            constantsList{end, 2} = constVal;     
+                            constVal = strtrim(tokens{2}); if endsWith(constVal, ';'), constVal = constVal(1:end-1); end
+                            constantsList{end+1, 1} = typeAndName{2}; constantsList{end, 2} = constVal;
                         end
                     end
-                    continue; % Safe filter: Constants are completely skipped from structural field additions
+                    continue; 
                 end
-
-
                 tokens = strsplit(line);
                 if length(tokens) < 2, continue; end
-
-                px4Type = tokens{1};
-                varName = tokens{2};
-
-                % Clean up any trailing formatting artifacts
+                px4Type = tokens{1}; varName = tokens{2};
                 if endsWith(varName, ';'), varName = varName(1:end-1); end
-
-                % --- ROBUST ARRAY EXTRACTION MECHANISM ---
                 arraySize = 1;
-
-                % Extract array size from either type or name (e.g., "float32[4]" or "q[4]")
                 arrayMatch = regexp([px4Type, ' ', varName], '\[(\d+)\]', 'tokens');
-                if ~isempty(arrayMatch)
-                    arraySize = str2double(arrayMatch{1}{1});
-                end
-
-                % Strip array notation from type and name
-                px4Type = regexprep(px4Type, '\[\d+\]', '');
-                varName = regexprep(varName, '\[\d+\]', '');
-
-                % Safety Filter: Skip layout padding fields if encountered
-                if startsWith(varName, 'sl_padding')
-                    continue;
-                end
-
-                % Detect dependencies: Check if this type references another message struct
-                % PX4 message types follow the pattern: TypeName or other known types
+                if ~isempty(arrayMatch), arraySize = str2double(arrayMatch{1}{1}); end
+                px4Type = regexprep(px4Type, '\[\d+\]', ''); varName = regexprep(varName, '\[\d+\]', '');
+                if startsWith(varName, 'sl_padding'), continue; end
                 [cType, slType, isDependency, depName] = obj.px4TypeToCTypesWithDeps(px4Type);
                 if isDependency
-                    % Record this dependency (convert CamelCase to snake_case)
                     depNameSnake = obj.camelCaseToSnakeCase(depName);
-                    if ~any(strcmp(dependencies, depNameSnake))
-                        dependencies{end+1} = depNameSnake; %#ok<AGROW>
-                    end
+                    if ~any(strcmp(dependencies, depNameSnake)), dependencies{end+1} = depNameSnake; end
                 end
-
-                parsedFields{end+1} = struct('px4Type', px4Type, 'varName', varName, ...
-                    'arraySize', arraySize, 'cType', cType, 'slType', slType, ...
-                    'isDependency', isDependency, 'depName', depName); %#ok<AGROW>
+                parsedFields{end+1} = struct('px4Type', px4Type, 'varName', varName, 'arraySize', arraySize, ...
+                    'cType', cType, 'slType', slType, 'isDependency', isDependency, 'depName', depName);
             end
 
-            % Reorder fields by native PX4 uORB size so the generated layout matches
-            % the runtime topic struct used by orb_copy()/orb_publish().
             if ~isempty(parsedFields)
                 fieldSizes = cellfun(@(f) obj.getPx4FieldTypeSize(f.px4Type), parsedFields);
-                [~, order] = sort(fieldSizes, 'descend');
-                parsedFields = parsedFields(order);
-
-
-                % Extract metadata from the REORDERED parsedFields. This ensures that 
-                % the JSON cache and the Simulink Bus match the C struct layout exactly.
-                parsedFieldsStruct = [parsedFields{:}];  % Convert cell to struct array
-                fieldNames = {parsedFieldsStruct.varName};
-                fieldTypes = {parsedFieldsStruct.px4Type};
-                arraySizes = [parsedFieldsStruct.arraySize];
+                [~, order] = sort(fieldSizes, 'descend'); parsedFields = parsedFields(order);
+                parsedFieldsStruct = [parsedFields{:}];
+                fieldNames = {parsedFieldsStruct.varName}; fieldTypes = {parsedFieldsStruct.px4Type}; arraySizes = [parsedFieldsStruct.arraySize];
             end
 
-            % Emit the struct in the matched layout order.
             for i = 1:numel(parsedFields)
                 f = parsedFields{i};
-                if f.arraySize > 1
-                    structBody = sprintf('%s    %s %s[%d];\n', structBody, f.cType, f.varName, f.arraySize);
-                else
-                    structBody = sprintf('%s    %s %s;\n', structBody, f.cType, f.varName);
-                end
-
-                elem = Simulink.BusElement;
-                elem.Name = f.varName;
-                elem.DataType = f.slType;
-                elem.Dimensions = f.arraySize;
-                elem.Complexity = 'real';
-                elements = [elements; elem]; %#ok<AGROW>
+                if f.arraySize > 1, structBody = sprintf('%s    %s %s[%d];\n', structBody, f.cType, f.varName, f.arraySize);
+                else, structBody = sprintf('%s    %s %s;\n', structBody, f.cType, f.varName); end
             end
 
-            % Normalize topic variants in case multiple #TOPICS lines were present
-            if ~isempty(topicVariants)
-                topicVariants = unique(topicVariants, 'stable');
-            end
-
-            % If constants exist for this message, dynamically compile a native 
-            % Simulink integer enumeration file directly into the LocalGeneratedDir.
+            if ~isempty(topicVariants), topicVariants = unique(topicVariants, 'stable'); end
             if ~isempty(constantsList)
                 enumFileName = fullfile(obj.PackageRoot, '+enums', [topicName '.m']);
                 efid = fopen(enumFileName, 'w');
                 if efid ~= -1
-                    fprintf(efid, 'classdef %s < Simulink.IntEnumType\n', topicName);
-                    fprintf(efid, '    enumeration\n');
-                    for cIdx = 1:size(constantsList, 1)
-                        fprintf(efid, '        %s(%s)\n', constantsList{cIdx, 1}, constantsList{cIdx, 2});
-                    end
-                    fprintf(efid, '    end\n');
-                    fprintf(efid, 'end\n');
-                    fclose(efid);
-                    clear(topicName); % Clear class definition cache so MATLAB picks up changes instantly
+                    fprintf(efid, 'classdef %s < Simulink.IntEnumType\n    enumeration\n', topicName);
+                    for cIdx = 1:size(constantsList, 1), fprintf(efid, '        %s(%s)\n', constantsList{cIdx, 1}, constantsList{cIdx, 2}); end
+                    fprintf(efid, '    end\nend\n'); fclose(efid); clear(topicName);
                 end
             end
 
             if ~isempty(parsedFields)
-                % Preserve the exact lowercase snake_case name of the message file
                 nativeStructName = [lower(topicName), '_s'];
-
-                structBody = sprintf('%s};\ntypedef struct %s %s;\n', structBody, nativeStructName, nativeStructName);
-                structStr = structBody;
-
-                % OPTIMIZATION: Create bus object using the shared helper method
+                structStr = sprintf('%s};\ntypedef struct %s %s;\n', structBody, nativeStructName, nativeStructName);
                 busObj = obj.createBusFromFieldData(parsedFields);
-
-                % Populate field metadata table for caching in JSON
-                fieldMetadata = table(fieldNames', fieldTypes', arraySizes', ...
-                    'VariableNames', {'fieldName', 'fieldType', 'arraySize'});
+                fieldMetadata = table(fieldNames', fieldTypes', arraySizes', 'VariableNames', {'fieldName', 'fieldType', 'arraySize'});
             end
         end
 
         function exportGeneratedCode(obj, buildInfo)
             fprintf('\n--- [px4API] Starting Automated Clean & Export ---\n');
-            fprintf('Local Generated Folder: %s\n', obj.LocalGeneratedDir);
-            fprintf('Target PX4 Module  : %s\n', obj.ResolvedExternalDir);
-
-            % If no extensions configured, do not proceed with export.
-            if isempty(obj.AllowedExtensions)
-                fprintf('! AllowedExtensions is empty — nothing to export. Aborting.\n');
-                return;
-            end
-
-            if ~exist(obj.PX4Root, 'dir')
-                error('[px4API:Error] The specified PX4 root directory does not exist: %s', obj.PX4Root);
-            end
-
-            % HOUSEKEEPING: Force-purge old folder to completely erase legacy artifacts
-            if exist(obj.ResolvedExternalDir, 'dir')
-                fprintf('Purging legacy generated folder tree...\n');
-                rmdir(obj.ResolvedExternalDir, 's');
-            end
+            if isempty(obj.AllowedExtensions), return; end
+            if ~exist(obj.PX4Root, 'dir'), error('[px4API:Error] Missing PX4 Root'); end
+            if exist(obj.ResolvedExternalDir, 'dir'), rmdir(obj.ResolvedExternalDir, 's'); end
             mkdir(obj.ResolvedExternalDir);
+            if ~exist(obj.LocalGeneratedDir, 'dir'), obj.generateAllBussesAndHeaders(); end
 
-            % Enforce presence of the secondary local asset directory if utilized
-            if ~exist(obj.LocalGeneratedDir, 'dir')
-                fprintf('! Local generated folder missing, preparing artifacts first...\n');
-                obj.generateAllBussesAndHeaders();
-            end
-
-            % Extract model component name natively from buildInfo
             modelName = buildInfo.getBuildName;
-            if isempty(modelName)
-                error('[px4API:Error] buildInfo must provide ComponentName.');
-            end
-
-            % Generate model-agnostic wrapper header (decouples PX4 code from model name)
             obj.generateModelWrapper(modelName, obj.LocalGeneratedDir);
-
-            % Generate the model-specific glue locally from the live Simulink model.
             obj.generateOmnipotentCppGlue(obj.LocalGeneratedDir, buildInfo);
             
-            filesExportedCount = 0;
-            filesExportedCount = filesExportedCount + obj.copyGeneratedCodeFiles(obj.LocalGeneratedDir, obj.ResolvedExternalDir, false);
-
-            % Copy files from the main top-level model build directory
+            count = obj.copyGeneratedCodeFiles(obj.LocalGeneratedDir, obj.ResolvedExternalDir, false);
             buildDirInfo = RTW.getBuildDir(modelName);
-            filesExportedCount = filesExportedCount + obj.copyGeneratedCodeFiles(buildDirInfo.BuildDirectory, obj.ResolvedExternalDir, false);
-
-            % Extract and copy files from all referenced sub-models directly via ModelRefs
-            childModels = buildInfo.ModelRefs;
+            count = count + obj.copyGeneratedCodeFiles(buildDirInfo.BuildDirectory, obj.ResolvedExternalDir, false);
             
-            % Fetch the absolute path that replaces $(START_DIR)
             startDirValue = buildInfo.Settings.LocalAnchorDir;
-
-            for i = 1:length(childModels)
-                fprintf('Deploying referenced model files for: %s\n', childModels(i).Name);
-                
-                % Cleanly swap the raw file token with the real absolute path string
-                resolvedSubModelPath = strrep(childModels(i).Path, '$(START_DIR)', startDirValue);
-                
-                % Copy the sub-model's generated C/C++ files
-                filesExportedCount = filesExportedCount + obj.copyGeneratedCodeFiles(resolvedSubModelPath, obj.ResolvedExternalDir, false);
+            for i = 1:length(buildInfo.ModelRefs)
+                resolvedSubModelPath = strrep(buildInfo.ModelRefs(i).Path, '$(START_DIR)', startDirValue);
+                count = count + obj.copyGeneratedCodeFiles(resolvedSubModelPath, obj.ResolvedExternalDir, false);
             end
-
-            % Copy any non-inlinable shared utilities/types if they exist
             sharedUtilsDir = fullfile(startDirValue, buildDirInfo.SharedUtilsTgtDir);
             if exist(sharedUtilsDir, 'dir')
-                fprintf('Deploying critical shared utility headers and types...\n');
-                filesExportedCount = filesExportedCount + obj.copyGeneratedCodeFiles(sharedUtilsDir, obj.ResolvedExternalDir, false);
+                count = count + obj.copyGeneratedCodeFiles(sharedUtilsDir, obj.ResolvedExternalDir, false);
             end
-            fprintf('Successfully moved %d generated files over to PX4 code tree.\n', filesExportedCount);
+            fprintf('Successfully moved %d generated files over to PX4 code tree.\n', count);
         end
 
-
         function count = copyGeneratedCodeFiles(obj, sourceDir, destDir, recursive)
-            % Copy generated artifacts from sourceDir into destDir.
-            % If recursive is true, recurse into subdirectories; otherwise only copy files in sourceDir.
-            if nargin < 4
-                recursive = false;
-            end
-            if ~exist(sourceDir, 'dir')
-                count = 0;
-                return;
-            end
-            if ~exist(destDir, 'dir')
-                mkdir(destDir);
-            end
-
-            count = 0;
-            entries = dir(sourceDir);
+            if nargin < 4, recursive = false; end
+            if ~exist(sourceDir, 'dir'), count = 0; return; end
+            if ~exist(destDir, 'dir'), mkdir(destDir); end
+            count = 0; entries = dir(sourceDir);
             extAllowed = cellfun(@lower, obj.AllowedExtensions, 'UniformOutput', false);
-
             for i = 1:length(entries)
-                if entries(i).name(1) == '.'
-                    continue;  % skip . and ..
-                end
-
+                if entries(i).name(1) == '.', continue; end
                 sourcePath = fullfile(entries(i).folder, entries(i).name);
                 destPath = fullfile(destDir, entries(i).name);
-
                 if entries(i).isdir
-                    if recursive
-                        count = count + obj.copyGeneratedCodeFiles(sourcePath, destPath, true);
-                    end
+                    if recursive, count = count + obj.copyGeneratedCodeFiles(sourcePath, destPath, true); end
                 else
-                    % Only copy files matching AllowedExtensions property
                     [~, ~, ext] = fileparts(entries(i).name);
-
-                    % Skip px4_simulink_api.cpp for PX4 builds (empty/simulation-only stubs)
-                    if strcmp(entries(i).name, obj.StubSrcName)
-                        continue;
-                    end
-
-                    if ismember(lower(ext), extAllowed)
-                        copyfile(sourcePath, destPath, 'f');
-                        count = count + 1;
-                    end
+                    if strcmp(entries(i).name, obj.StubSrcName), continue; end % Skip desktop stubs
+                    if ismember(lower(ext), extAllowed), copyfile(sourcePath, destPath, 'f'); count = count + 1; end
                 end
             end
         end
 
         function generateOmnipotentCppGlue(obj, outputDir, buildInfo)
-            % Generate omnipotent uORB routing layer and ZERO-OVERHEAD parameter access functions.
-            %
-            % Optimization strategy:
-            %   - Native PX4 C++ Handles: Uses uORB::Publication and uORB::Subscription 
-            %     for zero-overhead, statically-typed topic access.
-            %   - Regex Parameter Extraction: Parses the generated header file to find 
-            %     parameter prototypes appended by the masks. No fragile Simulink scanning.
-            %   - Fast Updates: Uses a global struct and param_get/param_set with cached 
-            %     handles, checking the parameter_update uORB topic only when needed.
-
-            if nargin < 2 || isempty(outputDir)
-                outputDir = obj.ResolvedExternalDir;
-            end
-            if obj.ShowDebug
-                fprintf('\n--- [px4API] Generating Selective C++ uORB Glue Code (functions used only) ---\n');
-            end
-
-            % Step 1: Scan generated model code to find which uORB functions are called
-            buildDirs = buildInfo.getBuildDirList;
-            buildName = buildInfo.getBuildName;
+            if nargin < 2 || isempty(outputDir), outputDir = obj.ResolvedExternalDir; end
+            buildDirs = buildInfo.getBuildDirList; buildName = buildInfo.getBuildName;
             testCppPath = fullfile(buildDirs{1}, sprintf('%s.c', buildName));
             
-            readTopics = {};
-            writeTopics = {};
-            hasSystemTime = false;
-            
+            readTopics = {}; writeTopics = {}; hasSystemTime = false;
             if isfile(testCppPath)
-                fid = fopen(testCppPath, 'r');
-                testContent = fread(fid, '*char')';
-                fclose(fid);
-
-                % Exclude 'param_' from topic extraction
+                testContent = fileread(testCppPath);
                 readMatches = regexp(testContent, 'read_(?!px4_param_)(?!param_)(\w+)\s*\(', 'tokens');
                 writeMatches = regexp(testContent, 'write_(?!px4_param_)(?!param_)(\w+)\s*\(', 'tokens');
-
                 if ~isempty(readMatches), readTopics = unique([readMatches{:}]); end
                 if ~isempty(writeMatches), writeTopics = unique([writeMatches{:}]); end
-
                 readTopics = readTopics(~strcmp(readTopics, 'px4_system_time'));
                 writeTopics = writeTopics(~strcmp(writeTopics, 'px4_system_time'));
-                
-                if contains(testContent, 'read_px4_system_time')
-                    hasSystemTime = true;
-                end
+                if contains(testContent, 'read_px4_system_time'), hasSystemTime = true; end
             else
-                if obj.ShowDebug
-                    fprintf('  Warning: Could not find generated model code. Falling back to all cached topics.\n');
-                end
                 orbTopics = fieldnames(obj.OrbCache.topics)';
-                readTopics = orbTopics;
-                writeTopics = orbTopics;
-                hasSystemTime = true;
+                readTopics = orbTopics; writeTopics = orbTopics; hasSystemTime = true;
             end
 
-            % Step 2: Extract Parameter Prototypes via Regex from the generated header
-            paramHdrPath = fullfile(obj.LocalGeneratedDir, obj.StubHeaderName);
-            hdrContent = '';
-            if isfile(paramHdrPath)
-                hdrContent = fileread(paramHdrPath);
-            end
-            
-            % Regex to find: float read_param_xyz(void); and int32_t read_param_abc(void);
+            hdrContent = ''; paramHdrPath = fullfile(obj.LocalGeneratedDir, obj.StubHeaderName);
+            if isfile(paramHdrPath), hdrContent = fileread(paramHdrPath); end
             readParamMatches = regexp(hdrContent, '(float|int32_t)\s+read_param_(\w+)\s*\(\s*void\s*\)', 'tokens');
-            % Regex to find: void write_param_xyz(float value);
             writeParamMatches = regexp(hdrContent, 'void\s+write_param_(\w+)\s*\(\s*(float|int32_t)\s+value\s*\)', 'tokens');
             
-            paramNames = {};
-            paramTypes = {};
-            
+            paramNames = {}; paramTypes = {};
             for i = 1:length(readParamMatches)
-                cType = readParamMatches{i}{1};
-                name = readParamMatches{i}{2};
-                if ~any(strcmp(paramNames, name))
-                    paramNames{end+1} = name;
-                    paramTypes{end+1} = cType;
-                end
+                cType = readParamMatches{i}{1}; name = readParamMatches{i}{2};
+                if ~any(strcmp(paramNames, name)), paramNames{end+1} = name; paramTypes{end+1} = cType; end
             end
             for i = 1:length(writeParamMatches)
-                name = writeParamMatches{i}{1};
-                cType = writeParamMatches{i}{2};
-                if ~any(strcmp(paramNames, name))
-                    paramNames{end+1} = name;
-                    paramTypes{end+1} = cType;
-                end
+                name = writeParamMatches{i}{1}; cType = writeParamMatches{i}{2};
+                if ~any(strcmp(paramNames, name)), paramNames{end+1} = name; paramTypes{end+1} = cType; end
             end
 
-            % Start building the C++ source file
             cppStr = sprintf('// Auto-generated selective strongly-typed return-by-value uORB routing layer\n');
-            cppStr = sprintf('%s#include <px4_platform_common/defines.h>\n', cppStr); 
-            cppStr = sprintf('%s#include <px4_platform_common/log.h>\n', cppStr);
-            cppStr = sprintf('%s#include <uORB/uORB.h>\n', cppStr);
-            cppStr = sprintf('%s#include <uORB/Publication.hpp>\n', cppStr);
-            cppStr = sprintf('%s#include <uORB/Subscription.hpp>\n', cppStr);
-            cppStr = sprintf('%s#include <string.h>\n', cppStr);
-            cppStr = sprintf('%s#include <parameters/param.h>\n', cppStr);
-            cppStr = sprintf('%s#include <uORB/topics/parameter_update.h>\n\n', cppStr);
-            
+            cppStr = sprintf('%s#include <px4_platform_common/defines.h>\n#include <px4_platform_common/log.h>\n', cppStr);
+            cppStr = sprintf('%s#include <uORB/uORB.h>\n#include <uORB/Publication.hpp>\n#include <uORB/Subscription.hpp>\n', cppStr);
+            cppStr = sprintf('%s#include <string.h>\n#include <parameters/param.h>\n#include <uORB/topics/parameter_update.h>\n\n', cppStr);
             cppStr = sprintf('%s#include "%s"\n\n', cppStr, obj.StubHeaderName);
+            if hasSystemTime, cppStr = sprintf('%s#include <drivers/drv_hrt.h>\n', cppStr); end
 
-            if hasSystemTime
-                cppStr = sprintf('%s#include <drivers/drv_hrt.h>\n', cppStr);
-            end
-
-            % Include all necessary uORB topic headers
             allTopics = unique([readTopics, writeTopics]);
             for i = 1:length(allTopics)
-                topicName = allTopics{i};
-                baseTopic = obj.getBaseTopicForVariant(topicName);
-                cppStr = sprintf('%s#include <uORB/topics/%s.h>\n', cppStr, baseTopic);
+                cppStr = sprintf('%s#include <uORB/topics/%s.h>\n', cppStr, obj.getBaseTopicForVariant(allTopics{i}));
             end
 
-            % =========================================================================
-            % C++ SINGLETON CLASS FOR NATIVE PX4 UORB HANDLES
-            % =========================================================================
-            cppStr = sprintf('%s\nclass SimulinkGlue {\n', cppStr);
-            cppStr = sprintf('%spublic:\n', cppStr);
-            cppStr = sprintf('%s\tSimulinkGlue() {}\n', cppStr);
-            cppStr = sprintf('%s\t~SimulinkGlue() {}\n\n', cppStr); 
-
+            cppStr = sprintf('%s\nclass SimulinkGlue {\npublic:\n\tSimulinkGlue() {}\n\t~SimulinkGlue() {}\n\n', cppStr);
             for i = 1:length(writeTopics)
-                topicName = writeTopics{i};
-                baseTopic = obj.getBaseTopicForVariant(topicName);
-                cppStr = sprintf('%s\tuORB::Publication<%s_s> _%s_pub{ORB_ID(%s)};\n', cppStr, baseTopic, topicName, topicName);
+                t = writeTopics{i}; b = obj.getBaseTopicForVariant(t);
+                cppStr = sprintf('%s\tuORB::Publication<%s_s> _%s_pub{ORB_ID(%s)};\n', cppStr, b, t, t);
             end
-
             for i = 1:length(readTopics)
-                topicName = readTopics{i};
-                baseTopic = obj.getBaseTopicForVariant(topicName);
-                cppStr = sprintf('%s\tuORB::Subscription _%s_sub{ORB_ID(%s)};\n', cppStr, topicName, topicName);
+                t = readTopics{i}; b = obj.getBaseTopicForVariant(t);
+                cppStr = sprintf('%s\tuORB::Subscription _%s_sub{ORB_ID(%s)};\n', cppStr, t, t);
             end
-
-            cppStr = sprintf('%s};\n\n', cppStr);
-            cppStr = sprintf('%sstatic SimulinkGlue g_glue_instance;\n', cppStr);
-            cppStr = sprintf('%sstatic bool g_initialized = false;\n\n', cppStr);
-
-            % =========================================================================
-            % C-LINKAGE WRAPPER START
-            % =========================================================================
+            cppStr = sprintf('%s};\n\nstatic SimulinkGlue g_glue_instance;\nstatic bool g_initialized = false;\n\n', cppStr);
             cppStr = sprintf('%sextern "C" {\n\n', cppStr);
 
-            % System Time
             if hasSystemTime
-                cppStr = sprintf('%suint64_t read_px4_system_time(void) {\n', cppStr);
-                cppStr = sprintf('%s\treturn hrt_absolute_time();\n', cppStr);
-                cppStr = sprintf('%s}\n\n', cppStr);
+                cppStr = sprintf('%suint64_t read_px4_system_time(void) {\n\treturn hrt_absolute_time();\n}\n\n', cppStr);
             end
 
-            % Pure Readers (uORB)
             for i = 1:length(readTopics)
-                topicName = readTopics{i};
-                baseTopic = obj.getBaseTopicForVariant(topicName);
-                cppStr = sprintf('%s%s_s read_%s(void) {\n', cppStr, baseTopic, topicName);
-                cppStr = sprintf('%s\tstatic %s_s local_buffer{};\n', cppStr, baseTopic);
-                cppStr = sprintf('%s\tif (g_initialized) {\n', cppStr);
-                cppStr = sprintf('%s\t\tg_glue_instance._%s_sub.copy(&local_buffer);\n', cppStr, topicName);
-                cppStr = sprintf('%s\t}\n', cppStr);
+                t = readTopics{i}; b = obj.getBaseTopicForVariant(t);
+                cppStr = sprintf('%s%s_s read_%s(void) {\n\tstatic %s_s local_buffer{};\n', cppStr, b, t, b);
+                cppStr = sprintf('%s\tif (g_initialized) g_glue_instance._%s_sub.copy(&local_buffer);\n', cppStr, t);
                 cppStr = sprintf('%s\treturn local_buffer;\n}\n\n', cppStr);
             end
-            
             for i = 1:length(allTopics)
-                topicName = allTopics{i};
-                baseTopic = obj.getBaseTopicForVariant(topicName);
-                if ~strcmp(topicName, baseTopic) && ~any(strcmp(readTopics, baseTopic))
-                    cppStr = sprintf('%s%s_s read_%s(void) {\n', cppStr, baseTopic, baseTopic);
-                    cppStr = sprintf('%s\treturn read_%s();\n}\n\n', cppStr, topicName);
+                t = allTopics{i}; b = obj.getBaseTopicForVariant(t);
+                if ~strcmp(t, b) && ~any(strcmp(readTopics, b))
+                    cppStr = sprintf('%s%s_s read_%s(void) { return read_%s(); }\n\n', cppStr, b, b, t);
                 end
             end
 
-            % Pure Writers (uORB)
             for i = 1:length(writeTopics)
-                topicName = writeTopics{i};
-                baseTopic = obj.getBaseTopicForVariant(topicName);
-                cppStr = sprintf('%svoid write_%s(%s_s in) {\n', cppStr, topicName, baseTopic);
-                cppStr = sprintf('%s\tif (g_initialized) {\n', cppStr);
-                cppStr = sprintf('%s\t\tg_glue_instance._%s_pub.publish(in);\n', cppStr, topicName);
-                cppStr = sprintf('%s\t}\n', cppStr);
-                cppStr = sprintf('%s}\n\n', cppStr);
+                t = writeTopics{i}; b = obj.getBaseTopicForVariant(t);
+                cppStr = sprintf('%svoid write_%s(%s_s in) {\n\tif (g_initialized) g_glue_instance._%s_pub.publish(in);\n}\n\n', cppStr, t, b, t);
             end
-
             for i = 1:length(allTopics)
-                topicName = allTopics{i};
-                baseTopic = obj.getBaseTopicForVariant(topicName);
-                if ~strcmp(topicName, baseTopic) && ~any(strcmp(writeTopics, baseTopic))
-                    cppStr = sprintf('%svoid write_%s(%s_s in) {\n', cppStr, baseTopic, baseTopic);
-                    cppStr = sprintf('%s\twrite_%s(in);\n}\n\n', cppStr, topicName);
+                t = allTopics{i}; b = obj.getBaseTopicForVariant(t);
+                if ~strcmp(t, b) && ~any(strcmp(writeTopics, b))
+                    cppStr = sprintf('%svoid write_%s(%s_s in) { write_%s(in); }\n\n', cppStr, b, b, t);
                 end
             end
 
-            % Init Functions (NaN zeroing)
             for i = 1:length(allTopics)
-                baseTopic = allTopics{i};
-                variants = obj.getTopicVariants(baseTopic);
+                b = allTopics{i}; variants = obj.getTopicVariants(b);
                 for v = 1:length(variants)
-                    variantName = variants{v};
-                    cppStr = sprintf('%s%s_s init_%s(bool initialize_to_nan) {\n', cppStr, baseTopic, variantName);
-                    cppStr = sprintf('%s\tstruct %s_s msg;\n', cppStr, baseTopic);
-                    cppStr = sprintf('%s\tmemset(&msg, 0, sizeof(msg));\n', cppStr);
+                    vName = variants{v};
+                    cppStr = sprintf('%s%s_s init_%s(bool initialize_to_nan) {\n\tstruct %s_s msg;\n\tmemset(&msg, 0, sizeof(msg));\n', cppStr, b, vName, b);
                     cppStr = sprintf('%s\tif (initialize_to_nan) {\n', cppStr);
-
-                    fieldMeta = obj.getFieldMetadataFromCache(baseTopic);
-
+                    fieldMeta = obj.getFieldMetadataFromCache(b);
                     if ~isempty(fieldMeta) && height(fieldMeta) > 0
-                        for fieldIdx = 1:height(fieldMeta)
-                            fieldType = fieldMeta.fieldType{fieldIdx};
-                            isFloat = strcmp(fieldType, 'float32') || strcmp(fieldType, 'float64');
-
-                            if isFloat
-                                fieldName = fieldMeta.fieldName{fieldIdx};
-                                arraySize = fieldMeta.arraySize(fieldIdx);
-
-                                if arraySize > 1
-                                    for idx = 0:(arraySize-1)
-                                        cppStr = sprintf('%s\t\tmsg.%s[%d] = NAN;\n', cppStr, fieldName, idx);
-                                    end
+                        for fIdx = 1:height(fieldMeta)
+                            if strcmp(fieldMeta.fieldType{fIdx}, 'float32') || strcmp(fieldMeta.fieldType{fIdx}, 'float64')
+                                fName = fieldMeta.fieldName{fIdx}; aSize = fieldMeta.arraySize(fIdx);
+                                if aSize > 1
+                                    for idx = 0:(aSize-1), cppStr = sprintf('%s\t\tmsg.%s[%d] = NAN;\n', cppStr, fName, idx); end
                                 else
-                                    cppStr = sprintf('%s\t\tmsg.%s = NAN;\n', cppStr, fieldName);
+                                    cppStr = sprintf('%s\t\tmsg.%s = NAN;\n', cppStr, fName);
                                 end
                             end
                         end
                     end
-
-                    cppStr = sprintf('%s\t}\n', cppStr);
-                    cppStr = sprintf('%s\treturn msg;\n}\n\n', cppStr);
+                    cppStr = sprintf('%s\t}\n\treturn msg;\n}\n\n', cppStr);
                 end
-                if ~any(strcmp(variants, baseTopic))
-                    cppStr = sprintf('%s%s_s init_%s(bool initialize_to_nan) {\n', cppStr, baseTopic, baseTopic);
-                    cppStr = sprintf('%s\treturn init_%s(initialize_to_nan);\n}\n\n', cppStr, variants{1});
+                if ~any(strcmp(variants, b))
+                    cppStr = sprintf('%s%s_s init_%s(bool initialize_to_nan) { return init_%s(initialize_to_nan); }\n\n', cppStr, b, b, variants{1});
                 end
             end
 
-            % =========================================================================
-            % ZERO-OVERHEAD PARAMETER BRIDGE (REGEX EXTRACTION)
-            % =========================================================================
             if ~isempty(paramNames)
-                cppStr = sprintf('%s// --- Zero-Overhead Parameter Bridge (Extracted via Regex) ---\n', cppStr);
-                
-                % 1. Global Struct & Handles
+                cppStr = sprintf('%s// --- Zero-Overhead Parameter Bridge ---\n', cppStr);
                 cppStr = sprintf('%stypedef struct {\n', cppStr);
-                for i = 1:length(paramNames)
-                    cppStr = sprintf('%s    %s %s;\n', cppStr, paramTypes{i}, paramNames{i});
-                end
+                for i = 1:length(paramNames), cppStr = sprintf('%s    %s %s;\n', cppStr, paramTypes{i}, paramNames{i}); end
                 cppStr = sprintf('%s} simulink_params_t;\n\n', cppStr);
-                
                 cppStr = sprintf('%sstatic simulink_params_t g_simulink_params = {};\n', cppStr);
                 cppStr = sprintf('%sstatic param_t g_param_handles[%d] = {};\n', cppStr, length(paramNames));
                 cppStr = sprintf('%sstatic uORB::Subscription g_param_update_sub{ORB_ID(parameter_update)};\n\n', cppStr);
                 
-                % 2. Init Function (Called once on boot)
                 cppStr = sprintf('%sstatic void init_simulink_params() {\n', cppStr);
                 for i = 1:length(paramNames)
-                    % PX4 parameters are typically UPPER_CASE. We uppercase the extracted 
-                    % lowercase C-function name to match the PX4 parameter system.
-                    px4Name = upper(paramNames{i}); 
-                    cppStr = sprintf('%s    g_param_handles[%d] = param_find("%s");\n', cppStr, i-1, px4Name);
+                    cppStr = sprintf('%s    g_param_handles[%d] = param_find("%s");\n', cppStr, i-1, upper(paramNames{i}));
                 end
                 cppStr = sprintf('%s}\n\n', cppStr);
                 
-                % 3. Fast Update Function (Checks uORB boolean flag)
                 cppStr = sprintf('%sstatic void update_simulink_params_impl() {\n', cppStr);
                 cppStr = sprintf('%s    if (g_param_update_sub.updated()) {\n', cppStr);
-                cppStr = sprintf('%s        parameter_update_s update;\n', cppStr);
-                cppStr = sprintf('%s        g_param_update_sub.copy(&update);\n', cppStr);
+                cppStr = sprintf('%s        parameter_update_s update;\n        g_param_update_sub.copy(&update);\n', cppStr);
                 for i = 1:length(paramNames)
                     cppStr = sprintf('%s        if (g_param_handles[%d] != PARAM_INVALID) param_get(g_param_handles[%d], &g_simulink_params.%s);\n', cppStr, i-1, i-1, paramNames{i});
                 end
-                cppStr = sprintf('%s    }\n', cppStr);
-                cppStr = sprintf('%s}\n\n', cppStr);
+                cppStr = sprintf('%s    }\n}\n\n', cppStr);
                 
-                % 4. Read/Write Implementations
                 for i = 1:length(paramNames)
-                    name = paramNames{i};
-                    cType = paramTypes{i};
-                    
-                    % Lock-free Read
-                    cppStr = sprintf('%s%s read_param_%s(void) {\n', cppStr, cType, name);
-                    cppStr = sprintf('%s    return g_simulink_params.%s;\n', cppStr, name);
-                    cppStr = sprintf('%s}\n\n', cppStr);
-                    
-                    % Optimized Write
+                    name = paramNames{i}; cType = paramTypes{i};
+                    cppStr = sprintf('%s%s read_param_%s(void) { return g_simulink_params.%s; }\n\n', cppStr, cType, name, name);
                     cppStr = sprintf('%svoid write_param_%s(%s value) {\n', cppStr, name, cType);
-                    
                     if strcmp(cType, 'float')
-                        % PX4 Native: Use PX4_ISFINITE and C-style fabsf to avoid std:: and -Werror=float-equal
                         cppStr = sprintf('%s    if (!PX4_ISFINITE(g_simulink_params.%s) || fabsf(g_simulink_params.%s - value) > 1e-6f) {\n', cppStr, name, name);
                     else
-                        % Int32 comparison: direct equality is safe
                         cppStr = sprintf('%s    if (g_simulink_params.%s != value) {\n', cppStr, name);
                     end
-                    
                     cppStr = sprintf('%s        g_simulink_params.%s = value;\n', cppStr, name);
                     cppStr = sprintf('%s        if (g_param_handles[%d] != PARAM_INVALID) param_set(g_param_handles[%d], &value);\n', cppStr, i-1, i-1);
-                    cppStr = sprintf('%s    }\n', cppStr);
-                    cppStr = sprintf('%s}\n\n', cppStr);
+                    cppStr = sprintf('%s    }\n}\n\n', cppStr);
                 end
             end
 
-            % Expose the update function to the main module
             cppStr = sprintf('%svoid update_simulink_params(void) {\n', cppStr);
-            if ~isempty(paramNames)
-                cppStr = sprintf('%s    update_simulink_params_impl();\n', cppStr);
-            end
+            if ~isempty(paramNames), cppStr = sprintf('%s    update_simulink_params_impl();\n', cppStr); end
             cppStr = sprintf('%s}\n\n', cppStr);
 
-            % Global Init (Placed at the end so it can call init_simulink_params safely)
-            cppStr = sprintf('%svoid init_px4_simulink_io(void) {\n', cppStr);
-            cppStr = sprintf('%s\tg_initialized = true;\n', cppStr);
+            cppStr = sprintf('%svoid init_px4_simulink_io(void) {\n\tg_initialized = true;\n', cppStr);
             if ~isempty(paramNames)
-                cppStr = sprintf('%s\tinit_simulink_params();\n', cppStr);
-                cppStr = sprintf('%s\tupdate_simulink_params_impl();\n', cppStr);
+                cppStr = sprintf('%s\tinit_simulink_params();\n\tupdate_simulink_params_impl();\n', cppStr);
             end
-            cppStr = sprintf('%s}\n\n', cppStr);
+            cppStr = sprintf('%s}\n\n}\n', cppStr);
 
-            % Close the C Linkage macro bracket block safely
-            cppStr = sprintf('%s}\n', cppStr);
-
-            % Deploy file
-            if ~exist(outputDir, 'dir')
-                mkdir(outputDir);
-            end
-            glueFilePath = fullfile(outputDir, obj.GlueName);
-            fid = fopen(glueFilePath, 'w');
-            if fid == -1
-                error('[px4API:Error] Could not write glue file: %s', glueFilePath);
-            end
-            fprintf(fid, '%s', cppStr);
-            fclose(fid);
-            if obj.ShowDebug
-                fprintf('✓ Successfully wrote native PX4 C++ uORB router: %s\n\n', glueFilePath);
-            end
+            if ~exist(outputDir, 'dir'), mkdir(outputDir); end
+            fid = fopen(fullfile(outputDir, obj.GlueName), 'w');
+            if fid == -1, error('[px4API:Error] Could not write glue file'); end
+            fprintf(fid, '%s', cppStr); fclose(fid);
         end
     end
 
     methods (Static)
-        % ========== STATIC HELPER METHODS ==========
-        % Type conversion, naming utilities, and topological sorting
         function resolvedPath = resolveAbsolutePath(pathStr)
-            % Resolve tilde, relative, and other path formats to absolute paths.
-            %
-            % This helper normalizes user-provided paths to handle:
-            %   - Tilde expansion (~ -> $HOME)
-            %   - Relative paths (./ ../)
-            %   - Already absolute paths (passed through)
-            %
-            % Input:
-            %   pathStr - Path string (any format)
-            %
-            % Output:
-            %   resolvedPath - Absolute path string
-
             resolvedPath = pathStr;
             if startsWith(resolvedPath, '~/') || strcmp(resolvedPath, '~')
                 resolvedPath = fullfile(getenv('HOME'), resolvedPath(2:end));
@@ -1454,117 +822,30 @@ classdef px4API < handle
         end
 
         function snakeName = camelCaseToSnakeCase(camelName)
-            % Convert CamelCase file names to snake_case uORB topic names.
-            %
-            % PX4 firmware v1.16+ uses CamelCase for .msg filenames but snake_case
-            % for internal uORB topic names.
-            %
-            % Algorithm:
-            %   1. Insert underscore before each uppercase letter when preceded by a letter or digit
-            %   2. Convert result to lowercase
-            %
-            % Examples:
-            %   SensorAirflow -> sensor_airflow
-            %   VehicleAttitude -> vehicle_attitude
-            %   Ekf2Timestamps -> ekf2_timestamps
-
-            % FIXED REGEX: ([a-z0-9]) captures digits as well as lowercase letters,
-            % forcing the boundary split to occur cleanly on names containing acronym numbers.
-            snakeName = regexprep(camelName, '([a-z0-9])([A-Z])', '$1_$2');
-            snakeName = lower(snakeName);
+            snakeName = lower(regexprep(camelName, '([a-z0-9])([A-Z])', '$1_$2'));
         end
-
 
         function variants = extractMsgTopicVariants(msgFilePath, defaultTopicName)
-            % Read a .msg file and return its explicit TOPICS definition if present.
-            %
-            % If the file contains a "#TOPICS" line, the returned list is exactly
-            % those topic names. Otherwise, the default topic name is returned.
-            variants = {};
-            if ~exist(msgFilePath, 'file')
-                variants = {defaultTopicName};
-                return;
-            end
-
+            variants = {defaultTopicName};
+            if ~exist(msgFilePath, 'file'), return; end
             fid = fopen(msgFilePath, 'r');
-            if fid == -1
-                variants = {defaultTopicName};
-                return;
-            end
-
-            fileData = textscan(fid, '%s', 'Delimiter', '\n');
-            fclose(fid);
-            lines = fileData{1};
-
+            if fid == -1, return; end
+            lines = textscan(fid, '%s', 'Delimiter', '\n'); fclose(fid); lines = lines{1};
             for i = 1:length(lines)
                 line = strtrim(lines{i});
-                if ~startsWith(line, '#')
-                    continue;
-                end
-
-                stripped = regexprep(line, '^#\s*', '');
-                toks = strsplit(strtrim(stripped));
-                if ~isempty(toks) && strcmpi(toks{1}, 'TOPICS')
-                    newTopics = toks(2:end);
-                    newTopics = newTopics(~cellfun(@isempty, newTopics));
-                    variants = [variants, newTopics]; %#ok<AGROW>
+                if startsWith(line, '#')
+                    toks = strsplit(strtrim(regexprep(line, '^#\s*', '')));
+                    if ~isempty(toks) && strcmpi(toks{1}, 'TOPICS')
+                        variants = [variants, toks(2:end)];
+                    end
                 end
             end
-
-            variants = unique(variants, 'stable');
-            if isempty(variants)
-                variants = {defaultTopicName};
-            end
-        end
-
-        function [cType, slType] = px4TypeToCTypes(px4Type)
-            % Map PX4 .msg primitive types to C and Simulink type names.
-            %
-            % Maps both standard C types (uint32, int32, etc.) and
-            % composite types (struct references).
-            %
-            % Inputs:
-            %   px4Type - Type name from .msg file (e.g., 'float32', 'int32', 'bool')
-            %
-            % Outputs:
-            %   cType - C type string (e.g., 'float', 'int32_t', 'struct vehicle_attitude_s')
-            %   slType - Simulink type name (e.g., 'single', 'int32', 'vehicle_attitude_s')
-
-            switch px4Type
-                case 'float32', slType = 'single';   cType = 'float';
-                case 'float64', slType = 'double';   cType = 'double';
-                case 'uint64',  slType = 'uint64';   cType = 'uint64_t';
-                case 'uint32',  slType = 'uint32';   cType = 'uint32_t';
-                case 'uint16',  slType = 'uint16';   cType = 'uint16_t';
-                case 'uint8',   slType = 'uint8';    cType = 'uint8_t';
-                case 'int64',   slType = 'int64';    cType = 'int64_t';
-                case 'int32',   slType = 'int32';    cType = 'int32_t';
-                case 'int16',   slType = 'int16';    cType = 'int16_t';
-                case 'int8',    slType = 'int8';     cType = 'int8_t';
-                case 'bool',    slType = 'boolean';  cType = 'bool';
-                case 'char',    slType = 'char';     cType = 'char';
-                otherwise
-                    % Non-primitive: assume embedded message type (struct reference)
-                    slType = [px4Type, '_s'];
-                    cType = ['struct ', px4Type, '_s'];
-            end
+            variants = unique(variants(~cellfun(@isempty, variants)), 'stable');
+            if isempty(variants), variants = {defaultTopicName}; end
         end
 
         function [cType, slType, isDependency, depName] = px4TypeToCTypesWithDeps(px4Type)
-            % Map PX4 types to C/Simulink types and detect struct dependencies.
-            %
-            % Used during code generation to:
-            %   1. Generate correct C struct members
-            %   2. Detect embedded message types (struct references)
-            %   3. Track dependencies for topological sorting
-            %
-            % Outputs:
-            %   isDependency - true if this field references another struct
-            %   depName - CamelCase name of the referenced struct (if isDependency=true)
-
-            isDependency = false;
-            depName = '';
-
+            isDependency = false; depName = '';
             switch px4Type
                 case 'float32', slType = 'single';   cType = 'float';
                 case 'float64', slType = 'double';   cType = 'double';
@@ -1579,48 +860,18 @@ classdef px4API < handle
                 case 'bool',    slType = 'boolean';  cType = 'bool';
                 case 'char',    slType = 'char';     cType = 'char';
                 otherwise
-                    % Non-primitive: embedded message type (struct reference)
-                    isDependency = true;
-                    depName = px4Type;  % Store CamelCase name for dependency tracking
-                    % Convert struct name to snake_case for C type
+                    isDependency = true; depName = px4Type;
                     structNameSnake = px4io.px4API.camelCaseToSnakeCase(px4Type);
-                    slType = [structNameSnake, '_s'];
-                    cType = ['struct ', structNameSnake, '_s'];
+                    slType = [structNameSnake, '_s']; cType = ['struct ', structNameSnake, '_s'];
             end
         end
 
         function orderedStructs = topologicalSortStructs(allStructs)
-            % Topologically sort struct definitions by dependencies.
-            %
-            % Ensures structs are defined before they're referenced, avoiding
-            % "incomplete type" compilation errors.
-            %
-            % Input:
-            %   allStructs - Cell array {topicName, structStr, dependencies}
-            %                where dependencies is a cell array of topic names
-            %
-            % Output:
-            %   orderedStructs - Cell array {topicName, structStr} sorted with
-            %                    dependencies appearing before dependents
-            %
-            % Algorithm: Depth-first traversal with cycle detection
-
-            if isempty(allStructs)
-                orderedStructs = {};
-                return;
-            end
-
+            if isempty(allStructs), orderedStructs = {}; return; end
             numStructs = size(allStructs, 1);
-            struct_map = containers.Map();  % topicName -> index
-            for i = 1:numStructs
-                struct_map(allStructs{i, 1}) = i;
-            end
-
-            % Track visited nodes for DFS
-            visited = false(numStructs, 1);
-            orderedStructs = {};
-
-            % Depth-first traversal to build dependency order
+            struct_map = containers.Map();
+            for i = 1:numStructs, struct_map(allStructs{i, 1}) = i; end
+            visited = false(numStructs, 1); orderedStructs = {};
             for i = 1:numStructs
                 if ~visited(i)
                     [orderedStructs, visited] = px4io.px4API.dfs_visit(i, allStructs, struct_map, visited, orderedStructs);
@@ -1628,22 +879,10 @@ classdef px4API < handle
             end
         end
 
-
         function [orderedStructs, visited] = dfs_visit(idx, allStructs, struct_map, visited, orderedStructs)
-            % Depth-first search helper for topological sort.
-            %
-            % Recursively visits dependency nodes before the current node,
-            % ensuring proper ordering for C struct definitions.
-
-            if visited(idx)
-                return;
-            end
-
+            if visited(idx), return; end
             visited(idx) = true;
-            topicName = allStructs{idx, 1};
             dependencies = allStructs{idx, 3};
-
-            % Visit dependencies first
             for i = 1:length(dependencies)
                 depName = dependencies{i};
                 if struct_map.isKey(depName)
@@ -1653,47 +892,78 @@ classdef px4API < handle
                     end
                 end
             end
-
-            % Add current struct after its dependencies
-            orderedStructs{end+1, 1} = topicName; 
+            orderedStructs{end+1, 1} = allStructs{idx, 1}; 
             orderedStructs{end, 2} = allStructs{idx, 2}; 
         end
 
-
         function listStr = getTopicDropdownString()
-            % Generate comma-separated list of all available PX4 message topics.
-            %
-            % Used by Simulink mask callbacks to populate uORB topic selector dropdowns.
-            %
-            % Output:
-            %   listStr - Comma-separated topic names (snake_case, alphabetically sorted)
-            %
-            % Note: Creates a temporary px4API instance to scan PX4 messages
-
             api = px4io.px4API();
-            msgDir = fullfile(api.PX4Root, 'msg');
-            if ~exist(msgDir, 'dir')
-                error('[px4API:Error] Could not find the mandatory PX4 message root folder directory at: %s', msgDir);
-            end
-
-            files = dir(fullfile(msgDir, '**', '*.msg'));
+            files = dir(fullfile(api.PX4Root, 'msg', '**', '*.msg'));
             topics = {};
             for i = 1:length(files)
                 [~, camelName, ~] = fileparts(files(i).name);
-                topicName = obj.camelCaseToSnakeCase(camelName);
-
-                % Skip internal metadata framework tags
+                topicName = px4io.px4API.camelCaseToSnakeCase(camelName);
                 if strcmp(topicName, 'message_version'), continue; end
-
-                variants = px4API.extractMsgTopicVariants(fullfile(files(i).folder, files(i).name), topicName);
-                for j = 1:length(variants)
-                    topics{end+1} = variants{j}; %#ok<AGROW>
-                end
+                variants = px4io.px4API.extractMsgTopicVariants(fullfile(files(i).folder, files(i).name), topicName);
+                topics = [topics, variants];
             end
+            listStr = strjoin(unique(topics(~cellfun(@isempty, topics))), ',');
+        end
 
-            % Deduplicate across subfolders and sort alphabetically
-            topics = unique(topics(~cellfun(@isempty, topics)));
-            listStr = strjoin(topics, ',');
+        function busObj = createBusFromFieldData(fieldsData)
+            if isempty(fieldsData), busObj = []; return; end
+            elements = [];
+            for fIdx = 1:length(fieldsData)
+                if iscell(fieldsData), f = fieldsData{fIdx}; else f = fieldsData(fIdx); end
+                if isfield(f, 'varName'), fName = f.varName; fType = f.slType;
+                else
+                    fName = f.name;
+                    [~, fType, ~, ~] = px4io.px4API.px4TypeToCTypesWithDeps(f.type);
+                end
+                elem = Simulink.BusElement;
+                elem.Name = fName; elem.DataType = fType; elem.Dimensions = f.arraySize;
+                elem.Complexity = 'real'; elem.SampleTime = -1; elem.DimensionsMode = 'Fixed';
+                elements = [elements; elem];
+            end
+            busObj = Simulink.Bus;
+            busObj.Elements = elements; busObj.DataScope = 'Imported'; busObj.HeaderFile = 'px4_simulink_api.h';
+        end
+
+        function runPostCodeGen(buildInfo)
+            apiInstance = px4io.px4API();
+            apiInstance.exportGeneratedCode(buildInfo);
+        end
+
+        function uorb_topic_callback(callbackContext)
+            blockHandle = callbackContext.BlockHandle;
+            choices = strsplit(px4io.px4API.getTopicDropdownString(), ',');
+            set_param(blockHandle, 'TypeOptions_uorb_topic', choices);
+        end
+
+        function generateModelWrapper(modelName, outputDir)
+            if isempty(modelName), error('modelName empty'); end
+            isLoaded = bdIsLoaded(modelName); if ~isLoaded, load_system(modelName); end
+            hasInputs = ~isempty(find_system(modelName, 'SearchDepth', 1, 'BlockType', 'Inport'));
+            hasOutputs = ~isempty(find_system(modelName, 'SearchDepth', 1, 'BlockType', 'Outport'));
+            if ~isLoaded, close_system(modelName, 0); end
+
+            w = sprintf('// Auto-generated model-agnostic wrapper\n#pragma once\n\n');
+            w = sprintf('%s#ifdef __cplusplus\nextern "C" {\n#endif\n', w);
+            w = sprintf('%svoid init_px4_simulink_io(void);\nvoid update_simulink_params(void);\n', w);
+            w = sprintf('%svoid %s_initialize(void);\nvoid %s_step(void);\n', w, modelName, modelName);
+            w = sprintf('%s#ifdef __cplusplus\n}\n#endif\n\n#include "%s.h"\n\n', w, modelName);
+            w = sprintf('%snamespace SimulinkWrapper {\nclass SimulinkModel {\npublic:\n', w);
+            w = sprintf('%s    void initialize() { init_px4_simulink_io(); %s_initialize(); }\n', w, modelName);
+            w = sprintf('%s    void step() { %s_step(); }\n', w, modelName);
+            if hasInputs, w = sprintf('%s    ExtU_%s_T& getExternalInputs() { return %s_U; }\n', w, modelName, modelName);
+            else, w = sprintf('%s    void* getExternalInputs() { return nullptr; }\n', w); end
+            if hasOutputs, w = sprintf('%s    const ExtY_%s_T& getExternalOutputs() { return %s_Y; }\n', w, modelName, modelName);
+            else, w = sprintf('%s    void* getExternalOutputs() { return nullptr; }\n', w); end
+            w = sprintf('%s};\n}  // namespace SimulinkWrapper\n', w);
+
+            if ~exist(outputDir, 'dir'), mkdir(outputDir); end
+            fid = fopen(fullfile(outputDir, 'simulink_model_wrapper.h'), 'w');
+            fprintf(fid, '%s', w); fclose(fid);
         end
 
         function listStr = getBaseTopicsDropdownString()
@@ -1715,7 +985,7 @@ classdef px4API < handle
             baseTopics = {};
             for i = 1:length(files)
                 [~, camelName, ~] = fileparts(files(i).name);
-                topicName = api.camelCaseToSnakeCase(camelName);
+                topicName = px4io.px4API.camelCaseToSnakeCase(camelName);
 
                 % Skip internal metadata framework tags
                 if strcmp(topicName, 'message_version'), continue; end
@@ -1727,189 +997,6 @@ classdef px4API < handle
             % Deduplicate across subfolders and sort alphabetically
             baseTopics = unique(baseTopics(~cellfun(@isempty, baseTopics)));
             listStr = strjoin(baseTopics, ',');
-        end
-
-        function busObj = createBusFromFieldData(fieldsData)
-            % Helper to create a Simulink.Bus object from an array of field structs.
-            % Accepts either parsedFields (from .msg parsing) or cached fieldsData (from JSON).
-            %
-            % Input:
-            %   fieldsData - Array of structs containing field definitions.
-            %                Expected fields: 
-            %                - From cache: name, type, arraySize
-            %                - From parser: varName, slType, arraySize
-
-            if isempty(fieldsData)
-                busObj = [];
-                return;
-            end
-
-            elements = [];
-            for fIdx = 1:length(fieldsData)
-                if iscell(fieldsData)
-                    f = fieldsData{fIdx};
-                else
-                    f = fieldsData(fIdx);
-                end
-
-                % Handle both parsedFields format (varName, slType) and cache format (name, type)
-                if isfield(f, 'varName')
-                    fName = f.varName;
-                    fType = f.slType;
-                else
-                    fName = f.name;
-                    [~, fType, ~, ~] = px4io.px4API.px4TypeToCTypesWithDeps(f.type);
-                end
-
-                fDim = f.arraySize;
-
-                elem = Simulink.BusElement;
-                elem.Name = fName;
-                elem.DataType = fType;
-                elem.Dimensions = fDim;
-                elem.Complexity = 'real';
-                elem.SampleTime = -1;       % Inherited sample time
-                elem.DimensionsMode = 'Fixed';
-                elements = [elements; elem]; %#ok<AGROW>
-            end
-
-            busObj = Simulink.Bus;
-            busObj.Elements = elements;
-            busObj.DataScope = 'Imported';
-            busObj.HeaderFile = 'px4_simulink_api.h';
-        end
-
-        function runPostCodeGen(buildInfo)
-            % Simulink callback hook executed immediately after code generation.
-            %
-            % This is called by Simulink's post-code generation system to:
-            %   - Export generated artifacts to PX4 (optional)
-            %   - Perform integration checks
-            %
-            % Input:
-            %   buildInfo - Simulink build info structure (contains model metadata)
-
-            apiInstance = px4io.px4API();
-            apiInstance.exportGeneratedCode(buildInfo);
-        end
-
-
-        function uorb_topic_callback(callbackContext)
-            % Simulink mask callback for uORB topic parameter.
-            %
-            % Invoked when the uORB topic block mask is initialized,
-            % populating the topic selector dropdown with available topics.
-            %
-            % Input:
-            %   callbackContext - Simulink mask context (contains BlockHandle)
-
-            blockHandle = callbackContext.BlockHandle;
-            choices = strsplit(px4API.getTopicDropdownString(), ',');
-            set_param(blockHandle, 'TypeOptions_uorb_topic', choices);
-        end
-
-        function generateModelWrapper(modelName, outputDir)
-            % Generate a model-agnostic wrapper header for PX4 code.
-            %
-            % Optimization: Automatically hooks into init_px4_simulink_io() to ensure 
-            % all native PX4 uORB and parameter handles are globally initialized 
-            % before the first model step.
-            %
-            % Inputs:
-            %   modelName - The actual Simulink model name (from buildInfo.ComponentName)
-            %   outputDir - Directory where wrapper header will be written
-            %
-            % Output file: simulink_model_wrapper.h
-            % Contains: C++ namespace with generic SimulinkModel class
-
-            if isempty(modelName) || ~(ischar(modelName) || isstring(modelName))
-                error('[px4API:Error] modelName must be provided and non-empty');
-            end
-
-            % --- Determine if the model has any Inports or Outports ---
-            isModelLoaded = bdIsLoaded(modelName);
-            if ~isModelLoaded
-                load_system(modelName);
-            end
-            
-            % Query both root-level interfaces
-            inports  = find_system(modelName, 'SearchDepth', 1, 'BlockType', 'Inport');
-            outports = find_system(modelName, 'SearchDepth', 1, 'BlockType', 'Outport');
-            
-            hasInputs  = ~isempty(inports);
-            hasOutputs = ~isempty(outports);
-            
-            % Clean up and close the model if we had to load it explicitly
-            if ~isModelLoaded
-                close_system(modelName, 0); 
-            end
-            % --------------------------------------------------------------
-
-            wrapperStr = sprintf('// Auto-generated model-agnostic wrapper\n');
-            wrapperStr = sprintf('%s// Decouples PX4 code from model name to enable model renaming without PX4 changes\n', wrapperStr);
-            wrapperStr = sprintf('%s// Model: %s (Nonreusable / Static Memory footprint)\n', wrapperStr, modelName);
-            wrapperStr = sprintf('%s#pragma once\n\n', wrapperStr);
-            
-            % Forward-declare Simulink generated functions and our PX4 glue init with C linkage.
-            % This forces the C++ compiler to treat the subsequent declarations inside the model header
-            % as C linkage, preventing name mangling while allowing C++ uORB headers to compile correctly.
-            wrapperStr = sprintf('%s#ifdef __cplusplus\nextern "C" {\n#endif\n', wrapperStr);
-            wrapperStr = sprintf('%svoid init_px4_simulink_io(void);\n', wrapperStr);
-            wrapperStr = sprintf('%svoid update_simulink_params(void);\n', wrapperStr);
-            wrapperStr = sprintf('%svoid %s_initialize(void);\n', wrapperStr, modelName);
-            wrapperStr = sprintf('%svoid %s_step(void);\n', wrapperStr, modelName);
-            wrapperStr = sprintf('%s#ifdef __cplusplus\n}\n#endif\n\n', wrapperStr);
-
-            % Include the header normally (no extern "C" wrapper block)
-            wrapperStr = sprintf('%s#include "%s.h"\n\n', wrapperStr, modelName);
-
-            wrapperStr = sprintf('%snamespace SimulinkWrapper {\n\n', wrapperStr);
-            wrapperStr = sprintf('%s// Generic model wrapper (model-name-agnostic interface)\n', wrapperStr);
-            wrapperStr = sprintf('%sclass SimulinkModel {\n', wrapperStr);
-            wrapperStr = sprintf('%spublic:\n', wrapperStr);
-            
-            % Hook global uORB/Parameter initialization directly into the model's initialize sequence
-            wrapperStr = sprintf('%s    void initialize() {\n', wrapperStr);
-            wrapperStr = sprintf('%s        init_px4_simulink_io(); // Initialize native PX4 uORB & param handles\n', wrapperStr);
-            wrapperStr = sprintf('%s        %s_initialize();        // Initialize Simulink generated states\n', wrapperStr, modelName);
-            wrapperStr = sprintf('%s    }\n', wrapperStr);
-            wrapperStr = sprintf('%s    void step() { %s_step(); }\n', wrapperStr, modelName);
-            
-            % --- DYNAMIC HANDLING: Inputs Interface ---
-            if hasInputs
-                % Returns a reference to the global static input structure variable
-                wrapperStr = sprintf('%s    ExtU_%s_T& getExternalInputs() { return %s_U; }\n', wrapperStr, modelName, modelName);
-            else
-                wrapperStr = sprintf('%s    // Model has no root inputs; returning nullptr fallback\n', wrapperStr);
-                wrapperStr = sprintf('%s    void* getExternalInputs() { return nullptr; }\n', wrapperStr);
-            end
-
-            % --- DYNAMIC HANDLING: Outputs Interface ---
-            if hasOutputs
-                % Returns a read-only reference to the global static output structure variable
-                wrapperStr = sprintf('%s    const ExtY_%s_T& getExternalOutputs() { return %s_Y; }\n', wrapperStr, modelName, modelName);
-            else
-                wrapperStr = sprintf('%s    // Model has no root outputs; returning nullptr fallback\n', wrapperStr);
-                wrapperStr = sprintf('%s    void* getExternalOutputs() { return nullptr; }\n', wrapperStr);
-            end
-            % -------------------------------------------
-            
-            wrapperStr = sprintf('%s};\n\n', wrapperStr);
-            wrapperStr = sprintf('%s}  // namespace SimulinkWrapper\n', wrapperStr);
-
-            % Write wrapper header
-            if ~exist(outputDir, 'dir')
-                mkdir(outputDir);
-            end
-
-            wrapperPath = fullfile(outputDir, 'simulink_model_wrapper.h');
-            fid = fopen(wrapperPath, 'w');
-            if fid == -1
-                error('[px4API:Error] Could not write wrapper header: %s', wrapperPath);
-            end
-            fprintf(fid, '%s', wrapperStr);
-            fclose(fid);
-            fprintf('✓ Generated model-agnostic wrapper: simulink_model_wrapper.h (model: %s)\n', modelName);
         end
     end
 end

@@ -142,9 +142,7 @@ classdef px4API < handle
                 % regenerate bus objects in workspace (they don't persist across clears)
                 obj.regenerateBusesInWorkspace();
             end
-        end
-
-         
+        end        
 
         function regenerateBusesInWorkspace(obj)
             % Regenerate Simulink bus objects and assign to MATLAB base workspace.
@@ -191,6 +189,37 @@ classdef px4API < handle
                 if obj.ShowDebug
                     fprintf('x No Simulink buses were loaded from cache\n');
                 end
+            end
+        end
+        
+
+        function ensureParamBinding(obj, prototypeStr, implStr)
+            % Appends parameter prototype and stub directly to the main API files.
+            % This ensures Simulink's Custom Code parser sees them without needing 
+            % to add extra files to the Simulink Configuration Parameters UI.
+            
+            hdrPath = fullfile(obj.LocalGeneratedDir, obj.StubHeaderName);
+            srcPath = fullfile(obj.LocalGeneratedDir, obj.StubSrcName);
+            
+            % Ensure files exist (fallback)
+            if ~exist(hdrPath, 'file') || ~exist(srcPath, 'file')
+                obj.generateAllBussesAndHeaders();
+            end
+            
+            contentH = fileread(hdrPath);
+            if ~contains(contentH, prototypeStr)
+                % Wrap in extern "C" to guarantee C-linkage regardless of where it's appended
+                safePrototype = sprintf('#ifdef __cplusplus\nextern "C" {\n#endif\n%s\n#ifdef __cplusplus\n}\n#endif', prototypeStr);
+                fid = fopen(hdrPath, 'a'); % 'a' for append
+                fprintf(fid, '\n%s\n', safePrototype);
+                fclose(fid);
+            end
+
+            contentS = fileread(srcPath);
+            if ~contains(contentS, implStr)
+                fid = fopen(srcPath, 'a'); % 'a' for append
+                fprintf(fid, '\n%s\n', implStr);
+                fclose(fid);
             end
         end
 
@@ -491,17 +520,9 @@ classdef px4API < handle
             % This is the first major code generation pipeline stage.
             % Creates:
             %   1. px4_simulink_api.h - C prototypes for all topics (read/write/init functions)
-            %   2. px4_simulink_api.cpp - C++ source stubs (for PX4 linking)
+            %   2. px4_simulink_api.c - C source stubs (for local desktop simulation linking)
             %   3. ORB cache update - Field metadata for all topics (used by NaN init code)
-            %
-            % Process:
-            %   - Pass 1: Parse all .msg files and collect struct definitions
-            %   - Pass 2: Topologically sort structs by dependencies (no forward references)
-            %   - Pass 3: Emit C++ code with proper declarations
-            %   - Side effect: Simulink buses are regenerated in workspace (via regenerateBusesInWorkspace)
-            %
-            % Input:
-            %   outputDir - Directory for generated .h/.cpp files (default: LocalGeneratedDir)
+            
             msgDir = fullfile(obj.PX4Root, 'msg');
             if ~exist(msgDir, 'dir')
                 error('[px4API:Error] Could not find PX4 msg directory at: %s', msgDir);
@@ -603,7 +624,7 @@ classdef px4API < handle
             % --- TYPE DEFINITION STRATEGY ---
             % For PX4 builds: Include the authentic, native uORB topic message headers directly!
             % For local simulation: use our generated mockup struct definitions
-            headerStr = sprintf('%s#if defined(__PX4_LINUX) || defined(__PX4_POSIX) || defined(__PX4_NUTTX)\n', headerStr);
+            headerStr = sprintf('%s#if defined(__PX4_NUTTX) || defined(__PX4_POSIX) || defined(__PX4_QURT) || defined(__PX4_CYGWIN)\n', headerStr);
             headerStr = sprintf('%s// PX4 Live Build: Pull real uORB architecture definitions directly from source tree\n', headerStr);
             
             if ~isempty(allStructs)
@@ -649,50 +670,31 @@ classdef px4API < handle
             headerStr = sprintf('%s#ifdef __cplusplus\nextern "C" {\n#endif\n\n', headerStr);
             headerStr = sprintf('%s// --- STRONGLY-TYPED RETURN-BY-VALUE PROTOTYPES FOR C CALLER ---\n', headerStr);
 
-            srcStr = sprintf('#include "%s"\n\n', obj.StubHeaderName);
-
-            % Define local workspace mock stubs environment constraints
-            srcStr = sprintf('%s#if !defined(__PX4_LINUX) && !defined(__PX4_POSIX) && !defined(__PX4_NUTTX)\n', srcStr);
-            srcStr = sprintf('%s// Local simulation stubs only\n\n', srcStr);
+            srcStr = sprintf('#include "%s"\n', obj.StubHeaderName);
+            srcStr = sprintf('%s#include <math.h> // Required for NAN macro in parameter stubs\n\n', srcStr);
 
             % Write clean function signatures using the unified typedef
             for i = 1:length(msgFiles)
                 [~, camelName, ~] = fileparts(msgFiles(i).name);
                 topicName = obj.camelCaseToSnakeCase(camelName);
 
-                % 1. Reader Prototype & Mock Source
+                % 1. Reader Prototype & Mock Source (No inline extern "C" needed)
                 headerStr = sprintf('%s%s_s read_%s(void);\n', headerStr, topicName, topicName);
-                srcStr = sprintf('%sextern "C" %s_s read_%s(void) { %s_s empty = {0}; return empty; }\n', srcStr, topicName, topicName, topicName);
+                srcStr = sprintf('%s%s_s read_%s(void) { %s_s empty = {0}; return empty; }\n', srcStr, topicName, topicName, topicName);
 
                 % 2. Writer Prototype & Mock Source
                 headerStr = sprintf('%svoid write_%s(%s_s in);\n', headerStr, topicName, topicName);
-                srcStr = sprintf('%sextern "C" void write_%s(%s_s in) {}\n', srcStr, topicName, topicName);
+                srcStr = sprintf('%svoid write_%s(%s_s in) {}\n', srcStr, topicName, topicName);
 
                 % 3. Dynamic Message Initialization Prototype & Mock Source
                 headerStr = sprintf('%s%s_s init_%s(bool initialize_to_nan);\n', headerStr, topicName, topicName);
-                srcStr = sprintf('%sextern "C" %s_s init_%s(bool initialize_to_nan) { %s_s empty = {0}; return empty; }\n', srcStr, topicName, topicName, topicName);
+                srcStr = sprintf('%s%s_s init_%s(bool initialize_to_nan) { %s_s empty = {0}; return empty; }\n', srcStr, topicName, topicName, topicName);
             end
 
             % Append a strongly-typed, zero-input function that returns system time by value
             headerStr = sprintf('%s\n// --- NATIVE HIGH-RESOLUTION SYSTEM CLOCK INTERFACES ---\n', headerStr);
             headerStr = sprintf('%suint64_t read_px4_system_time(void);\n', headerStr);
-            srcStr = sprintf('%sextern "C" uint64_t read_px4_system_time(void) { return 0; }\n', srcStr);
-
-            % =========================================================================
-            % NATIVE PARAMETER ENGINE SYSTEM BRIDGES FOR C CALLER
-            % =========================================================================
-            headerStr = sprintf('%s\n// --- NATIVE LIVE PARAMETER SYSTEM BRIDGES ---\n', headerStr);
-            headerStr = sprintf('%sfloat read_px4_param_float(const char* param_name);\n', headerStr);
-            headerStr = sprintf('%sint32_t read_px4_param_int32(const char* param_name);\n', headerStr);
-            headerStr = sprintf('%svoid write_px4_param_float(const char* param_name, float value);\n', headerStr);
-            headerStr = sprintf('%svoid write_px4_param_int32(const char* param_name, int32_t value);\n', headerStr);
-
-            srcStr = sprintf('%sextern "C" float read_px4_param_float(const char* param_name) { return 0.0f; }\n', srcStr);
-            srcStr = sprintf('%sextern "C" int32_t read_px4_param_int32(const char* param_name) { return 0; }\n', srcStr);
-            srcStr = sprintf('%sextern "C" void write_px4_param_float(const char* param_name, float value) {}\n', srcStr);
-            srcStr = sprintf('%sextern "C" void write_px4_param_int32(const char* param_name, int32_t value) {}\n', srcStr);
-
-            srcStr = sprintf('%s#endif\n', srcStr);
+            srcStr = sprintf('%suint64_t read_px4_system_time(void) { return 0; }\n', srcStr);
 
             headerStr = sprintf('%s\n#ifdef __cplusplus\n}\n#endif\n\n#endif // PX4_SIMULINK_API_H\n', headerStr);
 
@@ -718,18 +720,14 @@ classdef px4API < handle
                 error('[px4API:Error] Could not write source file: %s', srcFilePath);
             end
             
-            % Strip individual 'extern "C"' prefixes from the source string loop definitions
-            % Since they are already covered by the global header wrapper configuration
-            cleanSrcStr = strrep(srcStr, 'extern "C" ', '');
-            
-            fprintf(fid, '%s', cleanSrcStr);
+            % Write srcStr directly to the file
+            fprintf(fid, '%s', srcStr);
             fclose(fid);
             if obj.ShowDebug
                 fprintf('✓ Successfully generated source stubs for C Caller: %s\n', obj.StubSrcName);
             end
 
             % 3. Assign all Simulink bus objects to the workspace
-            % (Now that forward declarations exist, all inter-struct references are valid)
             for i = 1:size(busAssignments, 1)
                 topicName = busAssignments{i, 1};
                 busObj = busAssignments{i, 2};
@@ -741,9 +739,8 @@ classdef px4API < handle
                 fprintf('--- [px4API] System Ready for Simulink Modelling ---\n\n');
             end
 
-            % Persist the comprehensive cache (with both orb_id and field metadata) to JSON
+            % Persist the comprehensive cache to JSON
             obj.saveOrbCache();
-
         end
 
 
@@ -1099,16 +1096,15 @@ classdef px4API < handle
         end
 
         function generateOmnipotentCppGlue(obj, outputDir, buildInfo)
-            % Generate omnipotent uORB routing layer and parameter access functions.
+            % Generate omnipotent uORB routing layer and ZERO-OVERHEAD parameter access functions.
             %
             % Optimization strategy:
             %   - Native PX4 C++ Handles: Uses uORB::Publication and uORB::Subscription 
             %     for zero-overhead, statically-typed topic access.
-            %   - Global Initialization: All uORB handles are instantiated exactly once 
-            %     in init_px4_simulink_io() via a singleton C++ class.
-            %   - Robust Parameters: Reverts to param_find/param_get to guarantee 
-            %     compatibility with all PX4 parameters without requiring strict 
-            %     parameters.xml registration or ModuleParams update loops.
+            %   - Regex Parameter Extraction: Parses the generated header file to find 
+            %     parameter prototypes appended by the masks. No fragile Simulink scanning.
+            %   - Fast Updates: Uses a global struct and param_get/param_set with cached 
+            %     handles, checking the parameter_update uORB topic only when needed.
 
             if nargin < 2 || isempty(outputDir)
                 outputDir = obj.ResolvedExternalDir;
@@ -1117,11 +1113,9 @@ classdef px4API < handle
                 fprintf('\n--- [px4API] Generating Selective C++ uORB Glue Code (functions used only) ---\n');
             end
 
-            % Step 1: Scan generated model code to find which functions are called
-            requiredTopics = {};
+            % Step 1: Scan generated model code to find which uORB functions are called
             buildDirs = buildInfo.getBuildDirList;
             buildName = buildInfo.getBuildName;
-
             testCppPath = fullfile(buildDirs{1}, sprintf('%s.c', buildName));
             
             readTopics = {};
@@ -1133,9 +1127,9 @@ classdef px4API < handle
                 testContent = fread(fid, '*char')';
                 fclose(fid);
 
-                % Extract uORB topics
-                readMatches = regexp(testContent, 'read_(?!px4_param_)(\w+)\s*\(', 'tokens');
-                writeMatches = regexp(testContent, 'write_(?!px4_param_)(\w+)\s*\(', 'tokens');
+                % Exclude 'param_' from topic extraction
+                readMatches = regexp(testContent, 'read_(?!px4_param_)(?!param_)(\w+)\s*\(', 'tokens');
+                writeMatches = regexp(testContent, 'write_(?!px4_param_)(?!param_)(\w+)\s*\(', 'tokens');
 
                 if ~isempty(readMatches), readTopics = unique([readMatches{:}]); end
                 if ~isempty(writeMatches), writeTopics = unique([writeMatches{:}]); end
@@ -1146,10 +1140,6 @@ classdef px4API < handle
                 if contains(testContent, 'read_px4_system_time')
                     hasSystemTime = true;
                 end
-
-                if obj.ShowDebug
-                    fprintf('  Found %d read topics, %d write topics\n', length(readTopics), length(writeTopics));
-                end                
             else
                 if obj.ShowDebug
                     fprintf('  Warning: Could not find generated model code. Falling back to all cached topics.\n');
@@ -1160,15 +1150,49 @@ classdef px4API < handle
                 hasSystemTime = true;
             end
 
+            % Step 2: Extract Parameter Prototypes via Regex from the generated header
+            paramHdrPath = fullfile(obj.LocalGeneratedDir, obj.StubHeaderName);
+            hdrContent = '';
+            if isfile(paramHdrPath)
+                hdrContent = fileread(paramHdrPath);
+            end
+            
+            % Regex to find: float read_param_xyz(void); and int32_t read_param_abc(void);
+            readParamMatches = regexp(hdrContent, '(float|int32_t)\s+read_param_(\w+)\s*\(\s*void\s*\)', 'tokens');
+            % Regex to find: void write_param_xyz(float value);
+            writeParamMatches = regexp(hdrContent, 'void\s+write_param_(\w+)\s*\(\s*(float|int32_t)\s+value\s*\)', 'tokens');
+            
+            paramNames = {};
+            paramTypes = {};
+            
+            for i = 1:length(readParamMatches)
+                cType = readParamMatches{i}{1};
+                name = readParamMatches{i}{2};
+                if ~any(strcmp(paramNames, name))
+                    paramNames{end+1} = name;
+                    paramTypes{end+1} = cType;
+                end
+            end
+            for i = 1:length(writeParamMatches)
+                name = writeParamMatches{i}{1};
+                cType = writeParamMatches{i}{2};
+                if ~any(strcmp(paramNames, name))
+                    paramNames{end+1} = name;
+                    paramTypes{end+1} = cType;
+                end
+            end
+
             % Start building the C++ source file
             cppStr = sprintf('// Auto-generated selective strongly-typed return-by-value uORB routing layer\n');
-            cppStr = sprintf('%s#include <cmath>\n', cppStr); 
             cppStr = sprintf('%s#include <px4_platform_common/defines.h>\n', cppStr); 
             cppStr = sprintf('%s#include <px4_platform_common/log.h>\n', cppStr);
             cppStr = sprintf('%s#include <uORB/uORB.h>\n', cppStr);
             cppStr = sprintf('%s#include <uORB/Publication.hpp>\n', cppStr);
             cppStr = sprintf('%s#include <uORB/Subscription.hpp>\n', cppStr);
             cppStr = sprintf('%s#include <string.h>\n', cppStr);
+            cppStr = sprintf('%s#include <parameters/param.h>\n', cppStr);
+            cppStr = sprintf('%s#include <uORB/topics/parameter_update.h>\n\n', cppStr);
+            
             cppStr = sprintf('%s#include "%s"\n\n', cppStr, obj.StubHeaderName);
 
             if hasSystemTime
@@ -1188,16 +1212,15 @@ classdef px4API < handle
             % =========================================================================
             cppStr = sprintf('%s\nclass SimulinkGlue {\n', cppStr);
             cppStr = sprintf('%spublic:\n', cppStr);
-            cppStr = sprintf('%s\tSimulinkGlue() {}\n\n', cppStr);
+            cppStr = sprintf('%s\tSimulinkGlue() {}\n', cppStr);
+            cppStr = sprintf('%s\t~SimulinkGlue() {}\n\n', cppStr); 
 
-            % uORB Publications
             for i = 1:length(writeTopics)
                 topicName = writeTopics{i};
                 baseTopic = obj.getBaseTopicForVariant(topicName);
                 cppStr = sprintf('%s\tuORB::Publication<%s_s> _%s_pub{ORB_ID(%s)};\n', cppStr, baseTopic, topicName, topicName);
             end
 
-            % uORB Subscriptions
             for i = 1:length(readTopics)
                 topicName = readTopics{i};
                 baseTopic = obj.getBaseTopicForVariant(topicName);
@@ -1205,19 +1228,13 @@ classdef px4API < handle
             end
 
             cppStr = sprintf('%s};\n\n', cppStr);
-            cppStr = sprintf('%sstatic SimulinkGlue *g_glue = nullptr;\n\n', cppStr);
+            cppStr = sprintf('%sstatic SimulinkGlue g_glue_instance;\n', cppStr);
+            cppStr = sprintf('%sstatic bool g_initialized = false;\n\n', cppStr);
 
             % =========================================================================
             % C-LINKAGE WRAPPER START
             % =========================================================================
             cppStr = sprintf('%sextern "C" {\n\n', cppStr);
-
-            % Global Init
-            cppStr = sprintf('%svoid init_px4_simulink_io(void) {\n', cppStr);
-            cppStr = sprintf('%s\tif (g_glue == nullptr) {\n', cppStr);
-            cppStr = sprintf('%s\t\tg_glue = new SimulinkGlue();\n', cppStr);
-            cppStr = sprintf('%s\t}\n', cppStr);
-            cppStr = sprintf('%s}\n\n', cppStr);
 
             % System Time
             if hasSystemTime
@@ -1226,17 +1243,18 @@ classdef px4API < handle
                 cppStr = sprintf('%s}\n\n', cppStr);
             end
 
-            % Pure Readers
+            % Pure Readers (uORB)
             for i = 1:length(readTopics)
                 topicName = readTopics{i};
                 baseTopic = obj.getBaseTopicForVariant(topicName);
                 cppStr = sprintf('%s%s_s read_%s(void) {\n', cppStr, baseTopic, topicName);
                 cppStr = sprintf('%s\tstatic %s_s local_buffer{};\n', cppStr, baseTopic);
-                cppStr = sprintf('%s\tif (g_glue) g_glue->_%s_sub.copy(&local_buffer);\n', cppStr, topicName);
+                cppStr = sprintf('%s\tif (g_initialized) {\n', cppStr);
+                cppStr = sprintf('%s\t\tg_glue_instance._%s_sub.copy(&local_buffer);\n', cppStr, topicName);
+                cppStr = sprintf('%s\t}\n', cppStr);
                 cppStr = sprintf('%s\treturn local_buffer;\n}\n\n', cppStr);
             end
             
-            % Generate aliases for base topics
             for i = 1:length(allTopics)
                 topicName = allTopics{i};
                 baseTopic = obj.getBaseTopicForVariant(topicName);
@@ -1246,12 +1264,14 @@ classdef px4API < handle
                 end
             end
 
-            % Pure Writers
+            % Pure Writers (uORB)
             for i = 1:length(writeTopics)
                 topicName = writeTopics{i};
                 baseTopic = obj.getBaseTopicForVariant(topicName);
                 cppStr = sprintf('%svoid write_%s(%s_s in) {\n', cppStr, topicName, baseTopic);
-                cppStr = sprintf('%s\tif (g_glue) g_glue->_%s_pub.publish(in);\n', cppStr, topicName);
+                cppStr = sprintf('%s\tif (g_initialized) {\n', cppStr);
+                cppStr = sprintf('%s\t\tg_glue_instance._%s_pub.publish(in);\n', cppStr, topicName);
+                cppStr = sprintf('%s\t}\n', cppStr);
                 cppStr = sprintf('%s}\n\n', cppStr);
             end
 
@@ -1307,53 +1327,86 @@ classdef px4API < handle
             end
 
             % =========================================================================
-            % 5. HIGH-SPEED RUNTIME VALIDATION PARAMETER LAYER
+            % ZERO-OVERHEAD PARAMETER BRIDGE (REGEX EXTRACTION)
             % =========================================================================
-            % Close the C linkage block so C++ headers can declare C++ linkage symbols.
-            cppStr = sprintf('%s\n} // extern "C"\n\n', cppStr);
-            cppStr = sprintf('%s// --- NATIVE LIVE PARAMETER SYSTEM BRIDGES ---\n', cppStr);
-            cppStr = sprintf('%s#include <parameters/param.h>\n', cppStr); % Native PX4 parameter system header
-            cppStr = sprintf('%s\nextern "C" {\n\n', cppStr); % Reopen C linkage for parameter functions
+            if ~isempty(paramNames)
+                cppStr = sprintf('%s// --- Zero-Overhead Parameter Bridge (Extracted via Regex) ---\n', cppStr);
+                
+                % 1. Global Struct & Handles
+                cppStr = sprintf('%stypedef struct {\n', cppStr);
+                for i = 1:length(paramNames)
+                    cppStr = sprintf('%s    %s %s;\n', cppStr, paramTypes{i}, paramNames{i});
+                end
+                cppStr = sprintf('%s} simulink_params_t;\n\n', cppStr);
+                
+                cppStr = sprintf('%sstatic simulink_params_t g_simulink_params = {};\n', cppStr);
+                cppStr = sprintf('%sstatic param_t g_param_handles[%d] = {};\n', cppStr, length(paramNames));
+                cppStr = sprintf('%sstatic uORB::Subscription g_param_update_sub{ORB_ID(parameter_update)};\n\n', cppStr);
+                
+                % 2. Init Function (Called once on boot)
+                cppStr = sprintf('%sstatic void init_simulink_params() {\n', cppStr);
+                for i = 1:length(paramNames)
+                    % PX4 parameters are typically UPPER_CASE. We uppercase the extracted 
+                    % lowercase C-function name to match the PX4 parameter system.
+                    px4Name = upper(paramNames{i}); 
+                    cppStr = sprintf('%s    g_param_handles[%d] = param_find("%s");\n', cppStr, i-1, px4Name);
+                end
+                cppStr = sprintf('%s}\n\n', cppStr);
+                
+                % 3. Fast Update Function (Checks uORB boolean flag)
+                cppStr = sprintf('%sstatic void update_simulink_params_impl() {\n', cppStr);
+                cppStr = sprintf('%s    if (g_param_update_sub.updated()) {\n', cppStr);
+                cppStr = sprintf('%s        parameter_update_s update;\n', cppStr);
+                cppStr = sprintf('%s        g_param_update_sub.copy(&update);\n', cppStr);
+                for i = 1:length(paramNames)
+                    cppStr = sprintf('%s        if (g_param_handles[%d] != PARAM_INVALID) param_get(g_param_handles[%d], &g_simulink_params.%s);\n', cppStr, i-1, i-1, paramNames{i});
+                end
+                cppStr = sprintf('%s    }\n', cppStr);
+                cppStr = sprintf('%s}\n\n', cppStr);
+                
+                % 4. Read/Write Implementations
+                for i = 1:length(paramNames)
+                    name = paramNames{i};
+                    cType = paramTypes{i};
+                    
+                    % Lock-free Read
+                    cppStr = sprintf('%s%s read_param_%s(void) {\n', cppStr, cType, name);
+                    cppStr = sprintf('%s    return g_simulink_params.%s;\n', cppStr, name);
+                    cppStr = sprintf('%s}\n\n', cppStr);
+                    
+                    % Optimized Write
+                    cppStr = sprintf('%svoid write_param_%s(%s value) {\n', cppStr, name, cType);
+                    
+                    if strcmp(cType, 'float')
+                        % PX4 Native: Use PX4_ISFINITE and C-style fabsf to avoid std:: and -Werror=float-equal
+                        cppStr = sprintf('%s    if (!PX4_ISFINITE(g_simulink_params.%s) || fabsf(g_simulink_params.%s - value) > 1e-6f) {\n', cppStr, name, name);
+                    else
+                        % Int32 comparison: direct equality is safe
+                        cppStr = sprintf('%s    if (g_simulink_params.%s != value) {\n', cppStr, name);
+                    end
+                    
+                    cppStr = sprintf('%s        g_simulink_params.%s = value;\n', cppStr, name);
+                    cppStr = sprintf('%s        if (g_param_handles[%d] != PARAM_INVALID) param_set(g_param_handles[%d], &value);\n', cppStr, i-1, i-1);
+                    cppStr = sprintf('%s    }\n', cppStr);
+                    cppStr = sprintf('%s}\n\n', cppStr);
+                end
+            end
 
-            % RUNTIME VALIDATION FLOAT READER
-            cppStr = sprintf('%s__attribute__((used)) float read_px4_param_float(const char* param_name) {\n', cppStr);
-            cppStr = sprintf('%s    param_t handle = param_find(param_name);\n', cppStr);
-            cppStr = sprintf('%s    if (handle != PARAM_INVALID && param_type(handle) == PARAM_TYPE_FLOAT) {\n', cppStr);
-            cppStr = sprintf('%s        float val = NAN;\n', cppStr);
-            cppStr = sprintf('%s        if (param_get(handle, &val) == 0) { return val; }\n', cppStr);
-            cppStr = sprintf('%s    }\n', cppStr);
-            cppStr = sprintf('%s    return NAN;\n}\n\n', cppStr);
+            % Expose the update function to the main module
+            cppStr = sprintf('%svoid update_simulink_params(void) {\n', cppStr);
+            if ~isempty(paramNames)
+                cppStr = sprintf('%s    update_simulink_params_impl();\n', cppStr);
+            end
+            cppStr = sprintf('%s}\n\n', cppStr);
 
-            cppStr = sprintf('%s__attribute__((used)) int32_t read_px4_param_int32(const char* param_name) {\n', cppStr);
-            cppStr = sprintf('%s    param_t handle = param_find(param_name);\n', cppStr);
-            cppStr = sprintf('%s    if (handle != PARAM_INVALID && param_type(handle) == PARAM_TYPE_INT32) {\n', cppStr);
-            cppStr = sprintf('%s        int32_t val = 0;\n', cppStr);
-            cppStr = sprintf('%s        if (param_get(handle, &val) == 0) { return val; }\n', cppStr);
-            cppStr = sprintf('%s    }\n', cppStr);
-            cppStr = sprintf('%s    return 0;\n}\n\n', cppStr);
-
-            % RUNTIME VALIDATION WRITERS
-            cppStr = sprintf('%s__attribute__((used)) void write_px4_param_float(const char* param_name, float value) {\n', cppStr);
-            cppStr = sprintf('%s    param_t handle = param_find(param_name);\n', cppStr);
-            cppStr = sprintf('%s    if (handle != PARAM_INVALID && param_type(handle) == PARAM_TYPE_FLOAT) {\n', cppStr);
-            cppStr = sprintf('%s        float current_val = 0.0f;\n', cppStr);
-            cppStr = sprintf('%s        if (param_get(handle, &current_val) == 0) {\n', cppStr);
-            cppStr = sprintf('%s            if (fabsf(current_val - value) > 1e-6f) {\n', cppStr);
-            cppStr = sprintf('%s                param_set(handle, &value);\n', cppStr);
-            cppStr = sprintf('%s            }\n', cppStr);
-            cppStr = sprintf('%s        }\n', cppStr);
-            cppStr = sprintf('%s    }\n}\n\n', cppStr);
-
-            cppStr = sprintf('%s__attribute__((used)) void write_px4_param_int32(const char* param_name, int32_t value) {\n', cppStr);
-            cppStr = sprintf('%s    param_t handle = param_find(param_name);\n', cppStr);
-            cppStr = sprintf('%s    if (handle != PARAM_INVALID && param_type(handle) == PARAM_TYPE_INT32) {\n', cppStr);
-            cppStr = sprintf('%s        int32_t current_val = 0;\n', cppStr);
-            cppStr = sprintf('%s        if (param_get(handle, &current_val) == 0) {\n', cppStr);
-            cppStr = sprintf('%s            if (current_val != value) {\n', cppStr);
-            cppStr = sprintf('%s                param_set(handle, &value);\n', cppStr);
-            cppStr = sprintf('%s            }\n', cppStr);
-            cppStr = sprintf('%s        }\n', cppStr);
-            cppStr = sprintf('%s    }\n}\n\n', cppStr);
+            % Global Init (Placed at the end so it can call init_simulink_params safely)
+            cppStr = sprintf('%svoid init_px4_simulink_io(void) {\n', cppStr);
+            cppStr = sprintf('%s\tg_initialized = true;\n', cppStr);
+            if ~isempty(paramNames)
+                cppStr = sprintf('%s\tinit_simulink_params();\n', cppStr);
+                cppStr = sprintf('%s\tupdate_simulink_params_impl();\n', cppStr);
+            end
+            cppStr = sprintf('%s}\n\n', cppStr);
 
             % Close the C Linkage macro bracket block safely
             cppStr = sprintf('%s}\n', cppStr);
@@ -1802,6 +1855,7 @@ classdef px4API < handle
             % as C linkage, preventing name mangling while allowing C++ uORB headers to compile correctly.
             wrapperStr = sprintf('%s#ifdef __cplusplus\nextern "C" {\n#endif\n', wrapperStr);
             wrapperStr = sprintf('%svoid init_px4_simulink_io(void);\n', wrapperStr);
+            wrapperStr = sprintf('%svoid update_simulink_params(void);\n', wrapperStr);
             wrapperStr = sprintf('%svoid %s_initialize(void);\n', wrapperStr, modelName);
             wrapperStr = sprintf('%svoid %s_step(void);\n', wrapperStr, modelName);
             wrapperStr = sprintf('%s#ifdef __cplusplus\n}\n#endif\n\n', wrapperStr);

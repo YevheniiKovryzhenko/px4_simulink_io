@@ -87,12 +87,6 @@ classdef param_write
         %  - MaskWorkspace: Access to mask parameter values
         
         function MaskInitialization(maskInitContext)
-            % Primary mask initialization function.
-            %
-            % Configures C Caller block to use the appropriate parameter write function
-            % (write_px4_param_int32 or write_px4_param_float) based on param_type.
-            % Sets input port data type to match parameter type.
-            
             px4io.px4API();
 
             blockHandle = maskInitContext.BlockHandle;
@@ -107,13 +101,22 @@ classdef param_write
                 return;
             end
 
+            clean_param_name = lower(strtrim(param_name)); 
+            function_name = sprintf('write_param_%s', clean_param_name);
+
             if strcmp(param_type, 'int32')
-                function_name = 'write_px4_param_int32';
                 in_data_type = 'int32';
+                c_type = 'int32_t';
             else
-                function_name = 'write_px4_param_float';
                 in_data_type = 'single';
+                c_type = 'float';
             end
+
+            prototypeStr = sprintf('void %s(%s value);', function_name, c_type);
+            implStr = sprintf('void %s(%s value) { (void)value; }', function_name, c_type);
+
+            api = px4io.px4API();
+            api.ensureParamBinding(prototypeStr, implStr);
 
             c_caller_path = [blockPath '/C_Caller'];
             inport_path = [blockPath '/In1'];

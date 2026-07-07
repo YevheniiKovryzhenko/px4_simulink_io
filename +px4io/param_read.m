@@ -82,13 +82,7 @@ classdef param_read
         %  - MaskWorkspace: Access to mask parameter values
         
         function MaskInitialization(maskInitContext)
-            % Primary mask initialization function.
-            %
-            % Configures C Caller block to use the appropriate parameter read function
-            % (read_px4_param_int32 or read_px4_param_float) based on param_type.
-            % Sets output port data type to match parameter type.
-            
-            px4io.px4API();
+            api = px4io.px4API();
 
             blockHandle = maskInitContext.BlockHandle;
             blockPath = getfullname(blockHandle);
@@ -102,13 +96,23 @@ classdef param_read
                 return;
             end
 
+            clean_param_name = lower(strtrim(param_name)); 
+            function_name = sprintf('read_param_%s', clean_param_name);
+
             if strcmp(param_type, 'int32')
-                function_name = 'read_px4_param_int32';
                 out_data_type = 'int32';
+                c_type = 'int32_t';
+
+                implStr = sprintf('%s %s(void) { return 0; }', c_type, function_name);
             else
-                function_name = 'read_px4_param_float';
                 out_data_type = 'single';
-            end
+                c_type = 'float';
+
+                implStr = sprintf('%s %s(void) { return NAN; }', c_type, function_name);
+            end            
+
+            prototypeStr = sprintf('%s %s(void);', c_type, function_name);
+            api.ensureParamBinding(prototypeStr, implStr);
 
             c_caller_path = [blockPath '/C_Caller'];
             outport_path = [blockPath '/Out1'];

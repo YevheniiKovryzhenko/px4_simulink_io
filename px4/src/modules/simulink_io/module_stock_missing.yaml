@@ -1,6 +1,6 @@
 module_name: SIMULINK_IO
 parameters:
-    - group: Missing Parameter Re-Defines
+    - group: SIM Parameter Re-Defines
       definitions:
           MPC_MANTHR_MIN:
               description:

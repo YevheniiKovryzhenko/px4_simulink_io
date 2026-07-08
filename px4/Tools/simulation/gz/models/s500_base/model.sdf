@@ -319,11 +319,11 @@
       <velocity_decay />
       <pose>0.174 -0.174 0.06 0 0 0</pose>
       <inertial>
-        <mass>0.016076923076923075</mass>
+        <mass>0.01822</mass>
         <inertia>
-          <ixx>3.8464910483993325e-07</ixx>
-          <iyy>2.6115851691700804e-05</iyy>
-          <izz>2.649858234714004e-05</izz>
+          <ixx>2.19105e-05</ixx>
+          <iyy>2.19105e-05</iyy>
+          <izz>4.3821e-05</izz>
         </inertia>
       </inertial>
       <visual name="rotor_0_visual">
@@ -391,11 +391,11 @@
       <velocity_decay />
       <pose>-0.174 0.174 0.06 0 0 0</pose>
       <inertial>
-        <mass>0.016076923076923075</mass>
+        <mass>0.01822</mass>
         <inertia>
-          <ixx>3.8464910483993325e-07</ixx>
-          <iyy>2.6115851691700804e-05</iyy>
-          <izz>2.649858234714004e-05</izz>
+          <ixx>2.19105e-05</ixx>
+          <iyy>2.19105e-05</iyy>
+          <izz>4.3821e-05</izz>
         </inertia>
       </inertial>
       <visual name="rotor_1_visual">
@@ -463,11 +463,11 @@
       <velocity_decay />
       <pose>0.174 0.174 0.06 0 0 0</pose>
       <inertial>
-        <mass>0.016076923076923075</mass>
+        <mass>0.01822</mass>
         <inertia>
-          <ixx>3.8464910483993325e-07</ixx>
-          <iyy>2.6115851691700804e-05</iyy>
-          <izz>2.649858234714004e-05</izz>
+          <ixx>2.19105e-05</ixx>
+          <iyy>2.19105e-05</iyy>
+          <izz>4.3821e-05</izz>
         </inertia>
       </inertial>
       <visual name="rotor_2_visual">
@@ -535,11 +535,11 @@
       <velocity_decay />
       <pose>-0.174 -0.174 0.06 0 0 0</pose>
       <inertial>
-        <mass>0.016076923076923075</mass>
+        <mass>0.01822</mass>
         <inertia>
-          <ixx>3.8464910483993325e-07</ixx>
-          <iyy>2.6115851691700804e-05</iyy>
-          <izz>2.649858234714004e-05</izz>
+          <ixx>2.19105e-05</ixx>
+          <iyy>2.19105e-05</iyy>
+          <izz>4.3821e-05</izz>
         </inertia>
       </inertial>
       <visual name="rotor_3_visual">

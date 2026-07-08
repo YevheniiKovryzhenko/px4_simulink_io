@@ -1,6 +1,6 @@
 module_name: SIMULINK_GUIDANCE
 parameters:
-    - group: SIMULINK_GUIDANCE
+    - group: SIM Guidance
       definitions:
         SMG_EN:
             description:

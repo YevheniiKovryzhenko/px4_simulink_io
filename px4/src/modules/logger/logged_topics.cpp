@@ -381,28 +381,100 @@ void LoggedTopics::add_mavlink_tunnel()
 
 void LoggedTopics::add_sim_topics()
 {
-	//get all the debug instances used for simulink:
-	int32_t sm_log_delay_ms = 0;
-	param_get(param_find("SM_LOG_DELAY"),&sm_log_delay_ms);
-	add_topic("sim_control_status", sm_log_delay_ms);
-	add_topic("simulink_inbound", sm_log_delay_ms);
-	add_topic("simulink_outbound", sm_log_delay_ms);
-	add_topic("simulink_outbound_1", sm_log_delay_ms);
-	add_topic("simulink_outbound_2", sm_log_delay_ms);
-	add_topic("simulink_outbound_3", sm_log_delay_ms);
-	add_topic("simulink_inbound_ctrl", sm_log_delay_ms);
-	add_topic("simulink_guidance", sm_log_delay_ms);
+	static param_t sm_log_handle = param_find("SM_LOG");
+	int32_t sm_log_mask = 0;
 
-	//get the guidance topics:
-	int32_t compg_log_delay_ms = 0;
-	param_get(param_find("COMPG_LOG_DELAY"),&compg_log_delay_ms);
-	add_topic("sim_guidance_request");
-	add_topic("sim_guidance_status", 20);
-	add_topic("sim_guidance_trajectory", compg_log_delay_ms);
-	add_topic("companion_guidance_inbound", compg_log_delay_ms);
-	add_topic("companion_guidance_outbound", compg_log_delay_ms);
+	if (sm_log_handle == PARAM_INVALID || param_get(sm_log_handle, &sm_log_mask) != OK) {
+		return;
+	}
 
+	// 0: sim_control_status
+	if (sm_log_mask & (1 << 0))
+	{
+		static param_t h = param_find("SM_CTRLST_LOG_T");
+		int32_t sm_log_delay_ms = 0;
+		if (h != PARAM_INVALID) param_get(h, &sm_log_delay_ms);
+		add_topic("sim_control_status", sm_log_delay_ms);
+	}
+
+	// 1: simulink_inbound
+	if (sm_log_mask & (1 << 1))
+	{
+		static param_t h = param_find("SM_INBD_LOG_T");
+		int32_t sm_log_delay_ms = 0;
+		if (h != PARAM_INVALID) param_get(h, &sm_log_delay_ms);
+		add_topic("simulink_inbound", sm_log_delay_ms);
+		add_topic("simulink_inbound_ctrl", sm_log_delay_ms);
+	}
+
+	// 2: simulink_outbound
+	if (sm_log_mask & (1 << 2))
+	{
+		static param_t h = param_find("SM_OUTBD_LOG_T");
+		int32_t sm_log_delay_ms = 0;
+		if (h != PARAM_INVALID) param_get(h, &sm_log_delay_ms);
+		add_topic("simulink_outbound", sm_log_delay_ms);
+		add_topic("simulink_outbound_1", sm_log_delay_ms);
+		add_topic("simulink_outbound_2", sm_log_delay_ms);
+		add_topic("simulink_outbound_3", sm_log_delay_ms);
+	}
+
+	// 3: companion_guidance_inbound
+	if (sm_log_mask & (1 << 4))
+	{
+		static param_t h = param_find("SMG_IN_LOG_T");
+		int32_t sm_log_delay_ms = 0;
+		if (h != PARAM_INVALID) param_get(h, &sm_log_delay_ms);
+		add_topic("companion_guidance_inbound", sm_log_delay_ms);
+	}
+
+	// 4: companion_guidance_outbound
+	if (sm_log_mask & (1 << 3))
+	{
+		static param_t h = param_find("SMG_OUT_LOG_T");
+		int32_t sm_log_delay_ms = 0;
+		if (h != PARAM_INVALID) param_get(h, &sm_log_delay_ms);
+		add_topic("companion_guidance_outbound", sm_log_delay_ms);
+	}
+
+
+	// 5: sim_guidance_request
+	if (sm_log_mask & (1 << 5))
+	{
+		static param_t h = param_find("SMG_REQ_LOG_T");
+		int32_t sm_log_delay_ms = 0;
+		if (h != PARAM_INVALID) param_get(h, &sm_log_delay_ms);
+		add_topic("sim_guidance_request", sm_log_delay_ms);
+	}
+
+	// 6: sim_guidance_status
+	if (sm_log_mask & (1 << 6))
+	{
+		static param_t h = param_find("SMG_ST_LOG_T");
+		int32_t sm_log_delay_ms = 0;
+		if (h != PARAM_INVALID) param_get(h, &sm_log_delay_ms);
+		add_topic("sim_guidance_status", sm_log_delay_ms);
+	}
+
+	// 7: simulink_guidance
+	if (sm_log_mask & (1 << 7))
+	{
+		static param_t h = param_find("SMG_LOG_T");
+		int32_t sm_log_delay_ms = 0;
+		if (h != PARAM_INVALID) param_get(h, &sm_log_delay_ms);
+		add_topic("simulink_guidance", sm_log_delay_ms);
+	}
+
+	// 8: sim_guidance_trajectory
+	if (sm_log_mask & (1 << 8))
+	{
+		static param_t h = param_find("SMG_TR_LOG_T");
+		int32_t sm_log_delay_ms = 0;
+		if (h != PARAM_INVALID) param_get(h, &sm_log_delay_ms);
+		add_topic("sim_guidance_trajectory", sm_log_delay_ms);
+	}
 }
+
 
 int LoggedTopics::add_topics_from_file(const char *fname)
 {

@@ -124,15 +124,34 @@ parameters:
         long: If set to 1, add an ID to the log, which uniquely identifies the vehicle
       type: boolean
       default: 1
-- group: SIM_CTRL_MOD
+
+- group: SIM Control Logger
   definitions:
-    SM_LOG_DELAY:
+    SM_LOG:
             description:
-                short: SIMULINK INBOUND/OUTBOUND topics logging delay
+                short: Choose which Simulink topics to log
                 long: |
-                    This parameter control the frequency of the logging for
-                    all inputs/outputs to/from simulink. The value is delay
-                    is milliseconds.
+                    Select the types of uORB messages to log.
+            type: bitmask
+            bit:
+                0: sim_control_status
+                1: simulink_inbound
+                2: simulink_outbound
+                3: companion_guidance_inbound
+                4: companion_guidance_outbound
+                5: sim_guidance_request
+                6: sim_guidance_status
+                7: simulink_guidance
+                8: sim_guidance_trajectory
+            default: 511
+
+    SM_INBD_LOG_T:
+            description:
+                short: simulink_inbound topics logging delay
+                long: |
+                    This parameter controls the frequency of logging for
+                    all simulink_inbound topics. The value is the delay
+                    in milliseconds.
             type: int32
             unit: ms
             min: 0
@@ -140,18 +159,116 @@ parameters:
             reboot_required: true
             default: 20
 
-- group: SIM_GUIDANCE
-  definitions:
-    COMPG_LOG_DELAY:
+    SM_OUTBD_LOG_T:
             description:
-                short: SIMULINK Guidance topics logging delay
+                short: simulink_outbound topics logging delay
                 long: |
-                    This parameter control the frequency of the logging for
-                    all inputs/outputs to/from companion. The value is delay
-                    is milliseconds.
+                    This parameter controls the frequency of logging for
+                    all simulink_outbound topics. The value is the delay
+                    in milliseconds.
             type: int32
             unit: ms
             min: 0
             max: 10000
             reboot_required: true
-            default: 100
+            default: 20
+
+    SM_CTRLST_LOG_T:
+            description:
+                short: sim_control_status topic logging delay
+                long: |
+                    This parameter controls the frequency of logging for the
+                    sim_control_status topic. The value is the delay
+                    in milliseconds.
+            type: int32
+            unit: ms
+            min: 0
+            max: 10000
+            reboot_required: true
+            default: 20
+
+- group: SIM Guidance Logger
+  definitions:
+    SMG_OUT_LOG_T:
+            description:
+                short: companion_guidance_outbound logging delay
+                long: |
+                    This parameter controls the frequency of logging for the
+                    companion_guidance_outbound topic. The value is the delay
+                    in milliseconds.
+            type: int32
+            unit: ms
+            min: 0
+            max: 10000
+            reboot_required: true
+            default: 20
+
+    SMG_IN_LOG_T:
+            description:
+                short: companion_guidance_inbound logging delay
+                long: |
+                    This parameter controls the frequency of logging for the
+                    companion_guidance_inbound topic. The value is the delay
+                    in milliseconds.
+            type: int32
+            unit: ms
+            min: 0
+            max: 10000
+            reboot_required: true
+            default: 20
+
+    SMG_REQ_LOG_T:
+            description:
+                short: sim_guidance_request logging delay
+                long: |
+                    This parameter controls the frequency of logging for the
+                    sim_guidance_request topic. The value is the delay
+                    in milliseconds.
+            type: int32
+            unit: ms
+            min: 0
+            max: 10000
+            reboot_required: true
+            default: 0
+
+    SMG_ST_LOG_T:
+            description:
+                short: sim_guidance_status logging delay
+                long: |
+                    This parameter controls the frequency of logging for the
+                    sim_guidance_status topic. The value is the delay
+                    in milliseconds.
+            type: int32
+            unit: ms
+            min: 0
+            max: 10000
+            reboot_required: true
+            default: 0
+
+    SMG_LOG_T:
+            description:
+                short: simulink_guidance logging delay
+                long: |
+                    This parameter controls the frequency of logging for the
+                    simulink_guidance topic. The value is the delay
+                    in milliseconds.
+            type: int32
+            unit: ms
+            min: 0
+            max: 10000
+            reboot_required: true
+            default: 20
+
+    SMG_TR_LOG_T:
+            description:
+                short: sim_guidance_trajectory logging delay
+                long: |
+                    This parameter controls the frequency of logging for the
+                    sim_guidance_trajectory topic. The value is the delay
+                    in milliseconds.
+            type: int32
+            unit: ms
+            min: 0
+            max: 10000
+            reboot_required: true
+            default: 20

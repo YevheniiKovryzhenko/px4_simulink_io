@@ -9,7 +9,7 @@ function generate_params_json(Parameters)
     master_module = px4io.parameter.module(api.PX4ModuleName);
     
     % GROUP 1: SIMULINK Vehicle Model Shared Parameters
-    group_shared = px4io.parameter.group("SIMULINK Vehicle Model Shared Parameters");
+    group_shared = px4io.parameter.group("SIM Vehicle Model Shared Parameters");
     
     % Vehicle Mass
     group_shared.add(px4io.parameter.float(Parameters.Vehicle.Shared.Mass) ...
@@ -32,7 +32,7 @@ function generate_params_json(Parameters)
     master_module.add_group(group_shared);
 
     % GROUP 2: SIMULINK Fixed-Wing Guidance & Differential Flatness
-    group_guidance = px4io.parameter.group("SIMULINK Guidance Parameters");
+    group_guidance = px4io.parameter.group("SIM Guidance Parameters");
 
     % Guidance Delayed Handoff
     group_guidance.add(px4io.parameter.float(Parameters.Vehicle.Guidance.AutonomusSwitchingDelay) ...
@@ -54,7 +54,7 @@ function generate_params_json(Parameters)
     master_module.add_group(group_guidance);
 
     % GROUP 3: SIMULINK Lumped Matrix Aerodynamics
-    group_aero = px4io.parameter.group("SIMULINK Lumped Matrix Aerodynamics");
+    group_aero = px4io.parameter.group("SIM Lumped Matrix Aerodynamics");
     
     % Automatically scales into sub-vector blocks via num_instances rules
     group_aero.add(px4io.parameter.matrix(Parameters.Vehicle.Aerodynamics.D).set_name("SM_AERO_D").set_description("Aerodynamic lumped parameter D system grid tensor matrix"));
@@ -64,7 +64,7 @@ function generate_params_json(Parameters)
     master_module.add_group(group_aero);
 
     % GROUP 4: SIMULINK Pilot Stick Mapping Boundaries
-    group_sticks = px4io.parameter.group("SIMULINK Stick Mapping Boundaries");
+    group_sticks = px4io.parameter.group("SIM Stick Mapping Boundaries");
     
     stk = Parameters.Vehicle.ControlSystem.Sticks;
     group_sticks.add(px4io.parameter.float(stk.VelocityHorizonal).set_name("SM_STK_VELXY_MAX").set_unit(px4io.parameter.unit.M_S).set_description("Max horizontal velocity reference request from stick").set_min(0.0));
@@ -77,7 +77,7 @@ function generate_params_json(Parameters)
     master_module.add_group(group_sticks);
 
     % GROUP 5: SIMULINK Multirotor Flight Control System
-    group_mc_ctrl = px4io.parameter.group("Simulink Multirotor Control");
+    group_mc_ctrl = px4io.parameter.group("SIM Multirotor Control");
     
     % MC Outer Position Tracking Loops Parameters
     mc_p = [];
@@ -128,7 +128,7 @@ function generate_params_json(Parameters)
     end
     
     % GROUP 6: SIMULINK Fixed-Wing Flight Control System
-    group_fw_ctrl = px4io.parameter.group("Simulink Fixedwing Control");
+    group_fw_ctrl = px4io.parameter.group("SIM Fixedwing Control");
     
     % FW Outer Position Tracking Loops Parameters
     fw_p = [];

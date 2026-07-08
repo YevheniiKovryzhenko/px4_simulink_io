@@ -1,6 +1,6 @@
 module_name: SIMULINK_IO
 parameters:
-    - group: SIMULINK Vehicle Model Shared Parameters
+    - group: SIM Vehicle Model Shared Parameters
       definitions:
           SM_MASS:
               description:
@@ -63,7 +63,7 @@ parameters:
               default: 47.2583
               min: 0.0000
               decimal: 4
-    - group: SIMULINK Guidance Parameters
+    - group: SIM Guidance Parameters
       definitions:
           SM_GD_SW_DELAY:
               description:
@@ -139,7 +139,7 @@ parameters:
               min: 0.0000
               max: 1.0000
               decimal: 4
-    - group: SIMULINK Lumped Matrix Aerodynamics
+    - group: SIM Lumped Matrix Aerodynamics
       definitions:
           SM_AERO_D_R1_${i}:
               description:
@@ -213,7 +213,7 @@ parameters:
               instance_start: 1
               default: [0.0000, 0.0000, 0.0050]
               decimal: 4
-    - group: SIMULINK Stick Mapping Boundaries
+    - group: SIM Stick Mapping Boundaries
       definitions:
           SM_STK_VELXY_MAX:
               description:
@@ -267,7 +267,7 @@ parameters:
               instance_start: 1
               default: [1.9613, 1.9613, 0.9807]
               decimal: 4
-    - group: Simulink Multirotor Control
+    - group: SIM Multirotor Control
       definitions:
           SM_M_POS_KP_R1_${i}:
               description:
@@ -490,7 +490,7 @@ parameters:
               type: float
               num_instances: 3
               instance_start: 1
-              default: [0.0000, 0.0000, 0.3000]
+              default: [0.0000, 0.0000, 0.8000]
               decimal: 4
           SM_M_RAT_KI_R1_${i}:
               description:
@@ -538,7 +538,7 @@ parameters:
               type: float
               num_instances: 3
               instance_start: 1
-              default: [0.0000, 0.0000, 0.0100]
+              default: [0.0000, 0.0000, 0.2000]
               decimal: 4
           SM_M_ERR_ATT_LIM:
               description:

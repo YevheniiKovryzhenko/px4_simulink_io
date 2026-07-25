@@ -67,13 +67,30 @@ function generate_params_json(Parameters)
     group_sticks = px4io.parameter.group("SIM Stick Mapping Boundaries");
     
     stk = Parameters.Vehicle.ControlSystem.Sticks;
-    group_sticks.add(px4io.parameter.float(stk.VelocityHorizonal).set_name("SM_STK_VELXY_MAX").set_unit(px4io.parameter.unit.M_S).set_description("Max horizontal velocity reference request from stick").set_min(0.0));
-    group_sticks.add(px4io.parameter.float(stk.VelocityVertical).set_name("SM_STK_VEL_Z_MAX").set_unit(px4io.parameter.unit.M_S).set_description("Max vertical velocity reference request from stick").set_min(0.0));
     group_sticks.add(px4io.parameter.float(stk.Attitude).set_name("SM_STK_ATT_MAX").set_instances(3,1).set_unit(px4io.parameter.unit.RAD).set_description("Max roll pitch and yaw orientation bounding request from sticks"));
     group_sticks.add(px4io.parameter.float(stk.AngularRate).set_name("SM_STK_RATE_MAX").set_instances(3,1).set_unit(px4io.parameter.unit.RAD_S).set_description("Max roll pitch and yaw rate bounding request from sticks"));
     group_sticks.add(px4io.parameter.float(stk.Thrust).set_name("SM_STK_THR_MAX").set_unit(px4io.parameter.unit.NORM).set_description("Max manual normalized aggregate thrust command limits").set_min(0.0).set_max(1.0));
     group_sticks.add(px4io.parameter.float(stk.Moment).set_name("SM_STK_MOM_MAX").set_instances(3,1).set_unit(px4io.parameter.unit.NM).set_description("Max physical body moments allocated via stick override steps"));
+    group_sticks.add(px4io.parameter.float(stk.Velocity).set_name("SM_STK_VEL_MAX").set_instances(3,1).set_unit(px4io.parameter.unit.M_S).set_description("Max velocity bounding request from sticks"));
+    group_sticks.add(px4io.parameter.float(stk.Acceleration).set_name("SM_STK_ACC_MAX").set_instances(3,1).set_unit(px4io.parameter.unit.M_S2).set_description("Max acceleration bounding request from sticks"));
     
+    group_sticks.add(px4io.parameter.float(stk.MinMaxVelocityRateLimit(:,1)).set_name("SM_STK_MM_VELRX").set_instances(2,1).set_unit(px4io.parameter.unit.NORM).set_description("Minimum and maximum velocity rate stick limit"));
+    group_sticks.add(px4io.parameter.float(stk.MinMaxVelocityRateLimit(:,2)).set_name("SM_STK_MM_VELRY").set_instances(2,1).set_unit(px4io.parameter.unit.NORM).set_description("Minimum and maximum velocity rate stick limit"));
+    group_sticks.add(px4io.parameter.float(stk.MinMaxVelocityRateLimit(:,3)).set_name("SM_STK_MM_VELRZ").set_instances(2,1).set_unit(px4io.parameter.unit.NORM).set_description("Minimum and maximum velocity rate stick limit"));
+    
+    group_sticks.add(px4io.parameter.float(stk.MinMaxAccelerationRateLimit(:,1)).set_name("SM_STK_MM_ACCRX").set_instances(2,1).set_unit(px4io.parameter.unit.NORM).set_description("Minimum and maximum acceleration rate stick limit"));
+    group_sticks.add(px4io.parameter.float(stk.MinMaxAccelerationRateLimit(:,2)).set_name("SM_STK_MM_ACCRY").set_instances(2,1).set_unit(px4io.parameter.unit.NORM).set_description("Minimum and maximum acceleration rate stick limit"));
+    group_sticks.add(px4io.parameter.float(stk.MinMaxAccelerationRateLimit(:,3)).set_name("SM_STK_MM_ACCRZ").set_instances(2,1).set_unit(px4io.parameter.unit.NORM).set_description("Minimum and maximum acceleration rate stick limit"));
+
+    group_sticks.add(px4io.parameter.float(stk.VelocityRateFilterTS).set_name("SM_STK_VELR_T").set_instances(3,1).set_unit(px4io.parameter.unit.HZ).set_description("Velocity rate filter time constant").set_min(0.0));
+    group_sticks.add(px4io.parameter.float(stk.AccelerationRateFilterTS).set_name("SM_STK_ACCR_T").set_instances(3,1).set_unit(px4io.parameter.unit.HZ).set_description("Velocity rate filter time constant").set_min(0.0));
+
+    group_sticks.add(px4io.parameter.float(stk.TransitionDesiredCuttoff).set_name("SM_STK_TRDES_CT").set_instances(3,1).set_unit(px4io.parameter.unit.NORM).set_description("Cuttoff fraction for desired transition logic").set_min(0.0).set_max(1.0));
+    group_sticks.add(px4io.parameter.float(stk.HoverDesiredCuttoff).set_name("SM_STK_HWDES_CT").set_instances(3,1).set_unit(px4io.parameter.unit.NORM).set_description("Cuttoff fraction for desired hover logic").set_min(0.0).set_max(1.0));
+    
+    group_sticks.add(px4io.parameter.float(stk.TransitionDesiredTime).set_name("SM_STK_TRDES_T").set_instances(3,1).set_unit(px4io.parameter.unit.S).set_description("Time delay for desired transition logic").set_min(0.0));
+    group_sticks.add(px4io.parameter.float(stk.HoverDesiredTime).set_name("SM_STK_HVDES_T").set_instances(3,1).set_unit(px4io.parameter.unit.S).set_description("Time delay for desired hover logic").set_min(0.0));
+
     master_module.add_group(group_sticks);
 
     % GROUP 5: SIMULINK Multirotor Flight Control System

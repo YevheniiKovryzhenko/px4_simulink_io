@@ -32,7 +32,6 @@
 %  *
 %  ****************************************************************************/
 
-
 % px4API - PX4/Simulink Integration Code Generator
 %
 % This class generates strongly-typed C++ glue code and Simulink bus definitions

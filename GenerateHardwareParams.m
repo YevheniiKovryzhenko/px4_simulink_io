@@ -119,11 +119,11 @@ function generate_params_json(Parameters)
     group_sticks.add(px4io.parameter.float(stk.VelocityRateFilterTS).set_name("SM_STK_VELR_T").set_instances(3,1).set_unit(px4io.parameter.unit.HZ).set_description("Velocity rate filter time constant").set_min(0.0));
     group_sticks.add(px4io.parameter.float(stk.AccelerationRateFilterTS).set_name("SM_STK_ACCR_T").set_instances(3,1).set_unit(px4io.parameter.unit.HZ).set_description("Velocity rate filter time constant").set_min(0.0));
 
-    group_sticks.add(px4io.parameter.float(stk.TransitionDesiredCuttoff).set_name("SM_STK_TRDES_CT").set_instances(3,1).set_unit(px4io.parameter.unit.NORM).set_description("Cuttoff fraction for desired transition logic").set_min(0.0).set_max(1.0));
-    group_sticks.add(px4io.parameter.float(stk.HoverDesiredCuttoff).set_name("SM_STK_HWDES_CT").set_instances(3,1).set_unit(px4io.parameter.unit.NORM).set_description("Cuttoff fraction for desired hover logic").set_min(0.0).set_max(1.0));
+    group_sticks.add(px4io.parameter.float(stk.TransitionDesiredCuttoff).set_name("SM_STK_TRDS_CUT").set_instances(3,1).set_unit(px4io.parameter.unit.NORM).set_description("Cuttoff fraction for desired transition logic").set_min(0.0).set_max(1.0));
+    group_sticks.add(px4io.parameter.float(stk.HoverDesiredCuttoff).set_name("SM_STK_HWDS_CUT").set_instances(3,1).set_unit(px4io.parameter.unit.NORM).set_description("Cuttoff fraction for desired hover logic").set_min(0.0).set_max(1.0));
     
-    group_sticks.add(px4io.parameter.float(stk.TransitionDesiredTime).set_name("SM_STK_TRDES_T").set_instances(3,1).set_unit(px4io.parameter.unit.S).set_description("Time delay for desired transition logic").set_min(0.0));
-    group_sticks.add(px4io.parameter.float(stk.HoverDesiredTime).set_name("SM_STK_HVDES_T").set_instances(3,1).set_unit(px4io.parameter.unit.S).set_description("Time delay for desired hover logic").set_min(0.0));
+    group_sticks.add(px4io.parameter.float(stk.TransitionDesiredTime).set_name("SM_STK_TRDS_T").set_instances(3,1).set_unit(px4io.parameter.unit.S).set_description("Time delay for desired transition logic").set_min(0.0));
+    group_sticks.add(px4io.parameter.float(stk.HoverDesiredTime).set_name("SM_STK_HVDS_T").set_instances(3,1).set_unit(px4io.parameter.unit.S).set_description("Time delay for desired hover logic").set_min(0.0));
 
     master_module.add_group(group_sticks);
 

@@ -161,6 +161,29 @@ classdef px4API < handle
                 end
             end
         end
+
+        function ensureBusesInWorkspace(obj)
+            % ENSUREBUSESINWORKSPACE - Restore cached Bus objects after a model
+            % close, workspace clear, or MATLAB-side cache eviction. The cheap
+            % sentinel check lets mask callbacks share one API without repeatedly
+            % rebuilding every Bus object.
+            if ~obj.OrbCacheLoaded
+                obj.loadOrbCacheFromJson();
+            end
+            if ~obj.OrbCacheLoaded || ~isfield(obj.OrbCache, 'topics')
+                return;
+            end
+
+            topics = fieldnames(obj.OrbCache.topics);
+            if isempty(topics)
+                return;
+            end
+            sentinelName = [topics{1}, '_s'];
+            existsInBase = evalin('base', sprintf('exist(''%s'', ''var'') == 1', sentinelName));
+            if ~existsInBase
+                obj.regenerateBusesInWorkspace();
+            end
+        end
         
         function registerParamBinding(obj, blockHandle, direction)
             % REGISTERPARAMBINDING - Cheap editor-time registration for one block.
@@ -1258,7 +1281,7 @@ classdef px4API < handle
                 t = readTopics{i}; 
                 b = obj.getBaseTopicForVariant(t);
                 cppStr = sprintf('%s%s_s read_%s(void) {\n\tstatic %s_s local_buffer{};\n', cppStr, b, t, b);
-                cppStr = sprintf('%s\tif (g_initialized) g_glue_instance._%s_sub.copy(&local_buffer);\n', cppStr, t);
+                cppStr = sprintf('%s\tif (g_initialized && g_glue_instance._%s_sub.updated()) g_glue_instance._%s_sub.copy(&local_buffer);\n', cppStr, t, t);
                 cppStr = sprintf('%s\treturn local_buffer;\n}\n\n', cppStr);
             end
             for i = 1:length(allTopics)
@@ -1370,6 +1393,18 @@ classdef px4API < handle
     end
 
     methods (Static)
+        function api = getInstance()
+            % GETINSTANCE - Reuse the initialized API during mask callbacks.
+            % Bus objects are workspace-scoped, so restore them when a model reopen
+            % or `clear` removed them while this persistent handle remained alive.
+            persistent sharedApi
+            if isempty(sharedApi) || ~isvalid(sharedApi)
+                sharedApi = px4io.px4API();
+            end
+            api = sharedApi;
+            api.ensureBusesInWorkspace();
+        end
+
         function resolvedPath = resolveAbsolutePath(pathStr)
             % RESOLVEABSOLUTEPATH - Normalizes paths (handles ~, ./, and ../).
             resolvedPath = pathStr;
@@ -1491,7 +1526,20 @@ classdef px4API < handle
             % GETTOPICDROPDOWNSTRING - Generates comma-separated list of all uORB topics.
             %
             % Used by Simulink mask callbacks to populate dropdown menus.
-            api = px4io.px4API();
+            api = px4io.px4API.getInstance();
+            if isfield(api.OrbCache, 'topics') && ~isempty(fieldnames(api.OrbCache.topics))
+                topics = {};
+                for key = fieldnames(api.OrbCache.topics)'
+                    entry = api.OrbCache.topics.(key{1});
+                    variants = entry.variants;
+                    if ischar(variants) || isstring(variants)
+                        variants = {char(variants)};
+                    end
+                    topics = [topics, variants]; %#ok<AGROW>
+                end
+                listStr = strjoin(unique(topics(~cellfun(@isempty, topics))), ',');
+                return;
+            end
             files = dir(fullfile(api.PX4Root, 'msg', '**', '*.msg'));
             topics = {};
             for i = 1:length(files)
@@ -1573,7 +1621,7 @@ classdef px4API < handle
 
         function runPostCodeGen(buildInfo)
             % RUNPOSTCODEGEN - Simulink post-code generation callback hook.
-            apiInstance = px4io.px4API();
+            apiInstance = px4io.px4API.getInstance();
             apiInstance.exportGeneratedCode(buildInfo);
         end
 
@@ -1634,7 +1682,13 @@ classdef px4API < handle
             % GETBASETOPICSDROPDOWNSTRING - Generates list of unique base message types.
             %
             % Used to populate the primary dropdown, excluding redundant variant names.
-            api = px4io.px4API();
+            api = px4io.px4API.getInstance();
+            if isfield(api.OrbCache, 'topics') && ~isempty(fieldnames(api.OrbCache.topics))
+                baseTopics = fieldnames(api.OrbCache.topics);
+                baseTopics = baseTopics(~strcmp(baseTopics, 'message_version'));
+                listStr = strjoin(sort(baseTopics), ',');
+                return;
+            end
             msgDir = fullfile(api.PX4Root, 'msg');
             if ~exist(msgDir, 'dir')
                 error('[px4API:Error] Could not find the mandatory PX4 message root folder directory at: %s', msgDir);

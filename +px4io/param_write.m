@@ -82,7 +82,7 @@
 classdef param_write
     methods(Static)
         function MaskInitialization(maskInitContext)
-            api = px4io.px4API();
+            api = px4io.px4API.getInstance();
 
             blockHandle = maskInitContext.BlockHandle;
             blockPath = getfullname(blockHandle);

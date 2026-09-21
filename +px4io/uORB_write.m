@@ -60,7 +60,7 @@ classdef uORB_write
             % Sets the input port data type to the corresponding bus structure.
             % Only applies configuration if model is not locked (allows editing).
             
-            apiInstance = px4io.px4API(); % Enforce constructor validation and sync checks
+            apiInstance = px4io.px4API.getInstance();
             
             blockHandle = maskInitContext.BlockHandle;
             maskObj = maskInitContext.MaskObject; % Grab the mask object wrapper
@@ -146,7 +146,7 @@ classdef uORB_write
             % Update variant dropdown based on selected base topic
             variantParam = maskObj.getParameter('uorb_variant');
             if ~isempty(variantParam)
-                apiInstance = px4io.px4API();
+                apiInstance = px4io.px4API.getInstance();
                 uorb_topic = get_param(blockHandle, 'uorb_topic');
                 
                 if isempty(uorb_topic) || strcmp(uorb_topic, '<empty>') || isempty(strtrim(uorb_topic))

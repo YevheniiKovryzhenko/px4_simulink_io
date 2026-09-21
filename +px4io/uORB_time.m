@@ -74,7 +74,7 @@ classdef uORB_time
             % No configuration parameters needed (no topic selection).
             % Only applies configuration if model is not locked (allows editing).
 
-            px4io.px4API(); % Enforce constructor validation and sync checks
+            px4io.px4API.getInstance();
 
             blockHandle = maskInitContext.BlockHandle;
             blockPath = getfullname(blockHandle);

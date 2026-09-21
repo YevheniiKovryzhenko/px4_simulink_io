@@ -79,6 +79,7 @@ classdef px4API < handle
         OrbCache = struct()         % In-memory cache of uORB topic metadata
         OrbCacheLoaded = false      % Flag indicating if cache was loaded from disk
         OrbCacheFile = 'orb_id_cache.json' % Persistent cache filename
+        ParamBindingsFile = 'param_bindings.json' % Per-model authoritative parameter manifest
     end
     
     methods
@@ -161,137 +162,290 @@ classdef px4API < handle
             end
         end
         
-        function ensureParamBinding(obj, prototypeStr, implStr)
-            % ENSUREPARAMBINDING - Appends parameter prototypes and stubs to the static API files.
+        function registerParamBinding(obj, blockHandle, direction)
+            % REGISTERPARAMBINDING - Cheap editor-time registration for one block.
             %
-            % Called dynamically by param_read/param_write mask callbacks.
-            % Uses a simple contains() check to guarantee uniqueness and prevent 
-            % duplicate definitions if the mask fires multiple times.
+            % This records one block without scanning the complete model.
+            % Deleted/renamed blocks are pruned by syncParamBindings at build time.
+            if nargin < 3 || isempty(direction)
+                direction = '';
+            end
+
+            binding = obj.getParamBindingFromBlock(blockHandle, direction);
+            if isempty(binding)
+                return;
+            end
+
+            bindings = obj.loadParamBindings();
+            % A mask edit can change the parameter name or type. Remove this
+            % block's previous editor-time registration before merging its new
+            % configuration; registrations belonging to other blocks remain.
+            bindings = obj.removeBlockFromParamBindings(bindings, obj.blockToPath(blockHandle));
+            bindings = obj.mergeParamBinding(bindings, binding);
+            obj.saveParamBindings(bindings);
+            obj.writeParamArtifacts();
+        end
+
+        function syncParamBindings(obj, modelName)
+            % SYNCPARAMBINDINGS - Rebuild the manifest from the current model.
             %
-            % Inputs:
-            %   prototypeStr - The C function prototype (e.g., 'float read_param_x(void);')
-            %   implStr      - The C desktop stub implementation
-            
+            % This is the authoritative, once-per-build scan. It intentionally
+            % replaces the previous manifest, which removes bindings for blocks that
+            % the user deleted or that are no longer active.
+            if nargin < 2 || isempty(modelName)
+                modelName = bdroot;
+            end
+
+            if isempty(modelName)
+                return;
+            end
+
+            blocks = find_system(modelName, 'LookUnderMasks', 'on', 'BlockType', 'SubSystem');
+            bindings = struct('px4_name', {}, 'symbol', {}, 'type', {}, ...
+                'read', {}, 'write', {}, 'blocks', {});
+
+            for i = 1:length(blocks)
+                blk = blocks{i};
+                binding = obj.getParamBindingFromBlock(blk, '');
+                if ~isempty(binding)
+                    bindings = obj.mergeParamBinding(bindings, binding);
+                end
+            end
+
+            obj.saveParamBindings(bindings);
+            obj.writeParamArtifacts();
+        end
+
+        function bindings = loadParamBindings(obj)
+            bindings = struct('px4_name', {}, 'symbol', {}, 'type', {}, ...
+                'read', {}, 'write', {}, 'blocks', {});
+            manifestPath = fullfile(obj.LocalGeneratedDir, obj.ParamBindingsFile);
+            if ~isfile(manifestPath)
+                return;
+            end
+
+            try
+                manifest = jsondecode(fileread(manifestPath));
+                if isfield(manifest, 'bindings') && ~isempty(manifest.bindings)
+                    decodedBindings = manifest.bindings;
+                    if ~isstruct(decodedBindings)
+                        return;
+                    end
+                    bindings = decodedBindings;
+                    if iscell(bindings)
+                        bindings = [bindings{:}];
+                    end
+                end
+            catch err
+                warning('[px4API] Ignoring unreadable parameter manifest: %s', err.message);
+            end
+        end
+
+        function saveParamBindings(obj, bindings)
+            if ~exist(obj.LocalGeneratedDir, 'dir')
+                mkdir(obj.LocalGeneratedDir);
+            end
+
+            manifest = struct('schema_version', 1, 'bindings', {bindings});
+            newContent = jsonencode(manifest, 'PrettyPrint', true);
+            manifestPath = fullfile(obj.LocalGeneratedDir, obj.ParamBindingsFile);
+            if isfile(manifestPath) && strcmp(fileread(manifestPath), newContent)
+                return;
+            end
+
+            % Replace rather than append so stale/deleted bindings disappear. Write
+            % through a sibling temporary file to avoid leaving partial JSON behind.
+            tempPath = [manifestPath, '.tmp'];
+            fid = fopen(tempPath, 'w');
+            if fid == -1
+                error('[px4API:Error] Could not write parameter manifest: %s', manifestPath);
+            end
+            fprintf(fid, '%s', newContent);
+            fclose(fid);
+            [ok, message] = movefile(tempPath, manifestPath, 'f');
+            if ~ok
+                error('[px4API:Error] Could not replace parameter manifest: %s', message);
+            end
+        end
+
+        function writeParamArtifacts(obj)
+            % WRITEPARAMARTIFACTS - Stable C Caller API, independent of bindings.
+            % `name` is a NUL-padded uint8[17] supplied by the hidden ParamName
+            % Constant in each mask. PX4 parameter names are at most 16 characters.
+            protoStr = sprintf(['float read_param_float(const uint8_t name[17]);\n', ...
+                'int32_t read_param_int32(const uint8_t name[17]);\n', ...
+                'void write_param_float(const uint8_t name[17], float value);\n', ...
+                'void write_param_int32(const uint8_t name[17], int32_t value);\n']);
+            implStr = sprintf(['float read_param_float(const uint8_t name[17]) { (void)name; return NAN; }\n', ...
+                'int32_t read_param_int32(const uint8_t name[17]) { (void)name; return 0; }\n', ...
+                'void write_param_float(const uint8_t name[17], float value) { (void)name; (void)value; }\n', ...
+                'void write_param_int32(const uint8_t name[17], int32_t value) { (void)name; (void)value; }\n']);
+
             hdrPath = fullfile(obj.LocalGeneratedDir, obj.StubHeaderName);
             srcPath = fullfile(obj.LocalGeneratedDir, obj.StubSrcName);
+
             if ~exist(hdrPath, 'file') || ~exist(srcPath, 'file')
                 obj.generateAllBussesAndHeaders();
             end
-            
+
             contentH = fileread(hdrPath);
-            if ~contains(contentH, prototypeStr)
-                % Wrap in extern "C" to guarantee C-linkage regardless of where it's appended
-                safePrototype = sprintf('#ifdef __cplusplus\nextern "C" {\n#endif\n%s\n#ifdef __cplusplus\n}\n#endif', prototypeStr);
-                fid = fopen(hdrPath, 'a'); 
-                fprintf(fid, '\n%s\n', safePrototype); 
-                fclose(fid);
+            if ~contains(contentH, '// --- PARAM PROTOTYPES START ---')
+                obj.generateAllBussesAndHeaders();
+                contentH = fileread(hdrPath);
             end
 
             contentS = fileread(srcPath);
-            if ~contains(contentS, implStr)
-                fid = fopen(srcPath, 'a'); 
-                fprintf(fid, '\n%s\n', implStr); 
+            if ~contains(contentS, '// --- PARAM IMPLEMENTATIONS START ---')
+                obj.generateAllBussesAndHeaders();
+                contentS = fileread(srcPath);
+            end
+
+            newContentH = regexprep(contentH, ...
+                '(?s)// --- PARAM PROTOTYPES START ---.*?// --- PARAM PROTOTYPES END ---', ...
+                sprintf('// --- PARAM PROTOTYPES START ---\n%s// --- PARAM PROTOTYPES END ---', protoStr));
+
+            if ~strcmp(contentH, newContentH)
+                fid = fopen(hdrPath, 'w');
+                fprintf(fid, '%s', newContentH);
+                fclose(fid);
+            end
+
+            newContentS = regexprep(contentS, ...
+                '(?s)// --- PARAM IMPLEMENTATIONS START ---.*?// --- PARAM IMPLEMENTATIONS END ---', ...
+                sprintf('// --- PARAM IMPLEMENTATIONS START ---\n%s// --- PARAM IMPLEMENTATIONS END ---', implStr));
+
+            if ~strcmp(contentS, newContentS)
+                fid = fopen(srcPath, 'w');
+                fprintf(fid, '%s', newContentS);
                 fclose(fid);
             end
         end
 
-        function ensureUorbBinding(obj, baseTopic, selectedTopic)
-            % ENSUREUORBBINDING - (Legacy/Dynamic) Injects uORB topic C code into the API files.
-            %
-            % Note: With the shift to a Monolithic Static API (generateAllBussesAndHeaders),
-            % this method is largely superseded but retained for edge-case dynamic injection.
-            % Uses bulletproof string replacement (strrep) targeting anchor comments to 
-            % prevent structural corruption and duplication when masks fire repeatedly.
-            %
-            % Inputs:
-            %   baseTopic     - The snake_case base message name (e.g., 'vehicle_attitude')
-            %   selectedTopic - The specific variant name (if applicable)
-            
-            msgDir = fullfile(obj.PX4Root, 'msg');
-            msgFiles = dir(fullfile(msgDir, '**', '*.msg'));
-            msgFilePath = '';
-            camelName = '';
-            
-            % 1. Find the .msg file for the base topic
-            for i = 1:length(msgFiles)
-                [~, cName, ~] = fileparts(msgFiles(i).name);
-                if strcmp(obj.camelCaseToSnakeCase(cName), baseTopic)
-                    msgFilePath = fullfile(msgFiles(i).folder, msgFiles(i).name);
-                    camelName = cName;
-                    break;
+        function binding = getParamBindingFromBlock(obj, block, direction)
+            % GETPARAMBINDINGFROMBLOCK - Convert one masked block to manifest data.
+            binding = [];
+            try
+                if strcmp(get_param(block, 'Commented'), 'on')
+                    return;
                 end
+                pName = strtrim(char(string(get_param(block, 'param_name'))));
+                pType = lower(strtrim(char(string(get_param(block, 'param_type')))));
+            catch
+                return; % Not a parameter mask.
             end
-            
-            if isempty(msgFilePath)
-                warning('[px4API] Could not find .msg file for %s', baseTopic);
+
+            if isempty(pName) || strcmp(pName, '<empty>')
+                return;
+            end
+            px4Name = upper(pName);
+            if isempty(regexp(px4Name, '^[A-Z][A-Z0-9_]*$', 'once'))
+                error('[px4API:InvalidParameterName] "%s" at %s is not a valid PX4 parameter name.', ...
+                    pName, obj.blockToPath(block));
+            end
+
+            if any(strcmp(pType, {'single', 'float', 'float32'}))
+                typeName = 'float';
+            elseif any(strcmp(pType, {'int32', 'int32_t'}))
+                typeName = 'int32';
+            else
+                error('[px4API:InvalidParameterType] "%s" at %s must be float/single or int32.', ...
+                    pType, obj.blockToPath(block));
+            end
+
+            direction = lower(char(string(direction)));
+            if isempty(direction)
+                direction = obj.inferParamDirection(block);
+            end
+            if ~any(strcmp(direction, {'read', 'write'}))
                 return;
             end
 
-            % 2. Generate local struct string and resolve dependencies via BFS
-            [localStructStr, ~, deps, ~, ~] = obj.generateBusFromMsg(camelName, baseTopic, msgFilePath);
-            allStructs = {baseTopic, localStructStr, deps};
-            queue = deps;
-            
-            while ~isempty(queue)
-                dep = queue{1};
-                queue(1) = [];
-                if ~any(strcmp(allStructs(:,1), dep))
-                    depFilePath = ''; depCamel = '';
-                    for i = 1:length(msgFiles)
-                        [~, cName, ~] = fileparts(msgFiles(i).name);
-                        if strcmp(obj.camelCaseToSnakeCase(cName), dep)
-                            depFilePath = fullfile(msgFiles(i).folder, msgFiles(i).name);
-                            depCamel = cName; break;
-                        end
+            binding = struct('px4_name', px4Name, ...
+                'symbol', [lower(px4Name), '_', typeName], ...
+                'type', typeName, ...
+                'read', strcmp(direction, 'read'), ...
+                'write', strcmp(direction, 'write'), ...
+                'blocks', {{obj.blockToPath(block)}});
+        end
+
+        function bindings = mergeParamBinding(obj, bindings, candidate)
+            % One physical PX4 parameter has exactly one declared type/handle.
+            for i = 1:numel(bindings)
+                if strcmp(bindings(i).px4_name, candidate.px4_name)
+                    if ~strcmp(bindings(i).type, candidate.type)
+                        error('[px4API:ParameterTypeConflict] PX4 parameter %s is configured as both %s and %s (including %s).', ...
+                            candidate.px4_name, bindings(i).type, candidate.type, candidate.blocks{1});
                     end
-                    if ~isempty(depFilePath)
-                        [depStr, ~, depDeps, ~, ~] = obj.generateBusFromMsg(depCamel, dep, depFilePath);
-                        allStructs = [allStructs; {dep, depStr, depDeps}];
-                        queue = [queue, depDeps];
+                    bindings(i).read = bindings(i).read || candidate.read;
+                    bindings(i).write = bindings(i).write || candidate.write;
+                    if ~any(strcmp(bindings(i).blocks, candidate.blocks{1}))
+                        bindings(i).blocks{end+1} = candidate.blocks{1};
                     end
+                    return;
                 end
             end
-            
-            % Topological sort to ensure dependencies are defined before dependents
-            orderedStructs = obj.topologicalSortStructs(allStructs);
-            fullLocalStructStr = '';
-            for i = 1:size(orderedStructs, 1)
-                fullLocalStructStr = sprintf('%s%s\n', fullLocalStructStr, orderedStructs{i, 2});
-            end
-            
-            % 3. Build prototype and implementation strings
-            prototypeStr = sprintf('%s_s read_%s(void);\nvoid write_%s(%s_s in);\n%s_s init_%s(bool initialize_to_nan);', ...
-                baseTopic, selectedTopic, selectedTopic, baseTopic, baseTopic, selectedTopic);
-            implStr = sprintf('%s_s read_%s(void) { %s_s empty = {0}; return empty; }\n', baseTopic, selectedTopic, baseTopic);
-            implStr = sprintf('%svoid write_%s(%s_s in) { (void)in; }\n', implStr, selectedTopic, baseTopic);
-            implStr = sprintf('%s%s_s init_%s(bool initialize_to_nan) { %s_s empty = {0}; return empty; }', implStr, baseTopic, selectedTopic, baseTopic);
+            bindings(end+1) = candidate;
+        end
 
-            % 4. Inject into header using anchor-based string replacement
-            hdrPath = fullfile(obj.LocalGeneratedDir, obj.StubHeaderName);
-            srcPath = fullfile(obj.LocalGeneratedDir, obj.StubSrcName);
-            if ~exist(hdrPath, 'file') || ~exist(srcPath, 'file')
-                obj.generateAllBussesAndHeaders();
+        function bindings = removeBlockFromParamBindings(~, bindings, blockPath)
+            % REMOVEBLOCKFROMPARAMBINDINGS - Prune one block's stale registration.
+            % Keep an entry if one or more other blocks still refer to it.
+            keep = true(1, numel(bindings));
+            for i = 1:numel(bindings)
+                blockList = bindings(i).blocks;
+                if ischar(blockList) || isstring(blockList)
+                    blockList = cellstr(blockList);
+                end
+                blockList = blockList(~strcmp(blockList, blockPath));
+                if isempty(blockList)
+                    keep(i) = false;
+                else
+                    bindings(i).blocks = blockList;
+                end
             end
-            
-            contentH = fileread(hdrPath);
-            if ~contains(contentH, sprintf('<uORB/topics/%s.h>', baseTopic))
-                px4IncludeStr = sprintf('// --- DYNAMIC PX4 INCLUDES ---\n#include <uORB/topics/%s.h>\ntypedef struct %s_s %s_s;', baseTopic, baseTopic, baseTopic);
-                contentH = strrep(contentH, '// --- DYNAMIC PX4 INCLUDES ---', px4IncludeStr);
+            bindings = bindings(keep);
+        end
+
+        function direction = inferParamDirection(~, block)
+            direction = '';
+            try
+                maskType = lower(char(string(get_param(block, 'MaskType'))));
+                reference = lower(char(string(get_param(block, 'ReferenceBlock'))));
+                identity = [maskType, ' ', reference];
+                if contains(identity, 'param_read') || contains(identity, 'parameter read')
+                    direction = 'read'; return;
+                elseif contains(identity, 'param_write') || contains(identity, 'parameter write')
+                    direction = 'write'; return;
+                end
+                % Compatibility fallback for existing library blocks.
+                ports = get_param(block, 'Ports');
+                if ports(2) > 0
+                    direction = 'read';
+                elseif ports(1) > 0
+                    direction = 'write';
+                end
+            catch
             end
-            if ~contains(contentH, sprintf('struct %s_s {', baseTopic))
-                localStructBlock = sprintf('// --- DYNAMIC LOCAL STRUCTS ---\n%s', fullLocalStructStr);
-                contentH = strrep(contentH, '// --- DYNAMIC LOCAL STRUCTS ---', localStructBlock);
+        end
+
+        function setParamNameConstant(~, constantPath, paramName)
+            % SETPARAMNAMECONSTANT - Mirror a mask name into hidden uint8[17] data.
+            px4Name = upper(strtrim(char(string(paramName))));
+            bytes = uint8(px4Name);
+            if numel(bytes) > 16
+                error('[px4API:ParameterNameTooLong] PX4 parameter "%s" exceeds the 16-character limit.', px4Name);
             end
-            if ~contains(contentH, sprintf('read_%s(void);', selectedTopic))
-                protoBlock = sprintf('// --- DYNAMIC PROTOTYPES ---\n%s', prototypeStr);
-                contentH = strrep(contentH, '// --- DYNAMIC PROTOTYPES ---', protoBlock);
-            end
-            
-            fid = fopen(hdrPath, 'w'); fprintf(fid, '%s', contentH); fclose(fid);
-            
-            contentS = fileread(srcPath);
-            if ~contains(contentS, sprintf('read_%s(void)', selectedTopic))
-                fid = fopen(srcPath, 'a'); fprintf(fid, '\n%s\n', implStr); fclose(fid);
+            data = zeros(1, 17, 'uint8');
+            data(1:numel(bytes)) = bytes;
+            set_param(constantPath, 'Value', mat2str(double(data)));
+            set_param(constantPath, 'OutDataTypeStr', 'uint8');
+        end
+
+        function path = blockToPath(~, block)
+            try
+                path = getfullname(block);
+            catch
+                path = char(string(block));
             end
         end
 
@@ -325,7 +479,7 @@ classdef px4API < handle
 
             if ~(exist(hdrPath, 'file') == 2 && exist(srcPath, 'file') == 2 && exist(checkPath, 'file') == 2)
                 reason = 'one or more generated source files are missing';
-                obj.clearFolderContents(obj.LocalGeneratedDir); 
+                obj.clearFolderContents(obj.LocalGeneratedDir, {obj.ParamBindingsFile});
                 obj.clearFolderContents(obj.EnumsDir);
                 return;
             end
@@ -366,23 +520,29 @@ classdef px4API < handle
                 reason = 'generated files are newer';
             else
                 reason = 'dependencies are newer';
-                obj.clearFolderContents(obj.LocalGeneratedDir); 
+                obj.clearFolderContents(obj.LocalGeneratedDir, {obj.ParamBindingsFile});
                 obj.clearFolderContents(obj.EnumsDir);
             end
         end
 
-        function clearFolderContents(~, folderPath)
+        function clearFolderContents(~, folderPath, preservedFiles)
             % CLEARFOLDERCONTENTS - Safely purges files inside a directory.
             %
             % Deletes files and subdirectories without deleting the parent folder 
             % itself. This prevents MATLAB from throwing path corruption warnings 
             % when active directories are forcefully removed.
             
+            if nargin < 3
+                preservedFiles = {};
+            end
             if exist(folderPath, 'dir') == 7
                 items = dir(folderPath);
                 for i = 1:length(items)
                     if strcmp(items(i).name, '.') || strcmp(items(i).name, '..')
                         continue; 
+                    end
+                    if ~items(i).isdir && any(strcmp(items(i).name, preservedFiles))
+                        continue;
                     end
                     fullItemPath = fullfile(items(i).folder, items(i).name);
                     if items(i).isdir
@@ -655,6 +815,8 @@ classdef px4API < handle
                 h = sprintf('%s%s_s init_%s(bool initialize_to_nan);\n', h, topicName, topicName);
             end
             h = sprintf('%suint64_t read_px4_system_time(void);\n\n', h);
+            h = sprintf('%s// --- PARAM PROTOTYPES START ---\n', h);
+            h = sprintf('%s// --- PARAM PROTOTYPES END ---\n\n', h);
             h = sprintf('%s#ifdef __cplusplus\n}\n#endif\n\n#endif // PX4_SIMULINK_API_H\n', h);
 
             % --- BUILD C SOURCE (Desktop stubs only) ---
@@ -670,6 +832,8 @@ classdef px4API < handle
                 s = sprintf('%svoid write_%s(%s_s in) { (void)in; }\n', s, topicName, topicName);
                 s = sprintf('%s%s_s init_%s(bool initialize_to_nan) { %s_s empty = {0}; return empty; }\n\n', s, topicName, topicName, topicName);
             end
+            s = sprintf('%s// --- PARAM IMPLEMENTATIONS START ---\n', s);
+            s = sprintf('%s// --- PARAM IMPLEMENTATIONS END ---\n', s);
 
             % Write generated files to disk
             if ~exist(obj.LocalGeneratedDir, 'dir')
@@ -683,6 +847,10 @@ classdef px4API < handle
             fid = fopen(fullfile(obj.LocalGeneratedDir, obj.StubSrcName), 'w');
             fprintf(fid, '%s', s);
             fclose(fid);
+
+            % Restore the fixed generic parameter declarations after rebuilding the
+            % monolithic uORB header/source pair.
+            obj.writeParamArtifacts();
             
             % Assign buses to workspace (including all variants to guarantee scope parity)
             for i = 1:size(busAssignments, 1)
@@ -931,6 +1099,9 @@ classdef px4API < handle
             end
 
             modelName = buildInfo.getBuildName;
+            % Reconcile once from the model before any generated code consumes the
+            % header. This also removes bindings for deleted or renamed blocks.
+            obj.syncParamBindings(modelName);
             obj.generateModelWrapper(modelName, obj.LocalGeneratedDir);
             obj.generateOmnipotentCppGlue(obj.LocalGeneratedDir, buildInfo);
             
@@ -1043,40 +1214,16 @@ classdef px4API < handle
                 hasSystemTime = true;
             end
 
-            % Extract Parameter Prototypes via Regex from the generated header
-            hdrContent = ''; 
-            paramHdrPath = fullfile(obj.LocalGeneratedDir, obj.StubHeaderName);
-            if isfile(paramHdrPath)
-                hdrContent = fileread(paramHdrPath); 
-            end
-            
-            readParamMatches = regexp(hdrContent, '(float|int32_t)\s+read_param_(\w+)\s*\(\s*void\s*\)', 'tokens');
-            writeParamMatches = regexp(hdrContent, 'void\s+write_param_(\w+)\s*\(\s*(float|int32_t)\s+value\s*\)', 'tokens');
-            
-            paramNames = {}; 
-            paramTypes = {};
-            for i = 1:length(readParamMatches)
-                cType = readParamMatches{i}{1}; 
-                name = readParamMatches{i}{2};
-                if ~any(strcmp(paramNames, name))
-                    paramNames{end+1} = name; 
-                    paramTypes{end+1} = cType; 
-                end
-            end
-            for i = 1:length(writeParamMatches)
-                name = writeParamMatches{i}{1}; 
-                cType = writeParamMatches{i}{2};
-                if ~any(strcmp(paramNames, name))
-                    paramNames{end+1} = name; 
-                    paramTypes{end+1} = cType; 
-                end
-            end
+            % The manifest preserves the physical PX4 name independently of the
+            % C symbol. Parsing symbols from the header used to turn FOO_float into
+            % a lookup for the nonexistent PX4 parameter FOO_FLOAT.
+            paramBindings = obj.loadParamBindings();
 
             % Build C++ Source String
             cppStr = sprintf('// Auto-generated selective strongly-typed return-by-value uORB routing layer\n');
             cppStr = sprintf('%s#include <px4_platform_common/defines.h>\n#include <px4_platform_common/log.h>\n', cppStr);
             cppStr = sprintf('%s#include <uORB/uORB.h>\n#include <uORB/Publication.hpp>\n#include <uORB/Subscription.hpp>\n', cppStr);
-            cppStr = sprintf('%s#include <string.h>\n#include <parameters/param.h>\n#include <uORB/topics/parameter_update.h>\n\n', cppStr);
+            cppStr = sprintf('%s#include <string.h>\n#include <math.h>\n#include <parameters/param.h>\n#include <uORB/topics/parameter_update.h>\n\n', cppStr);
             cppStr = sprintf('%s#include "%s"\n\n', cppStr, obj.StubHeaderName);
             if hasSystemTime
                 cppStr = sprintf('%s#include <drivers/drv_hrt.h>\n', cppStr); 
@@ -1165,60 +1312,49 @@ classdef px4API < handle
                 end
             end
 
-            % Zero-Overhead Parameter Bridge
-            if ~isempty(paramNames)
-                cppStr = sprintf('%s// --- Zero-Overhead Parameter Bridge ---\n', cppStr);
-                cppStr = sprintf('%stypedef struct {\n', cppStr);
-                for i = 1:length(paramNames)
-                    cppStr = sprintf('%s    %s %s;\n', cppStr, paramTypes{i}, paramNames{i}); 
+            % Stable generic parameter bridge. The model supplies a padded name,
+            % while this generated table resolves PX4 handles only during init.
+            cppStr = sprintf('%s// --- Cached Generic Parameter Bridge ---\n', cppStr);
+            cppStr = sprintf('%stypedef struct {\n    const char *name;\n    param_t handle;\n    param_type_t type;\n    union { float f; int32_t i; } value;\n} simulink_param_t;\n\n', cppStr);
+            if ~isempty(paramBindings)
+                cppStr = sprintf('%sstatic simulink_param_t g_simulink_params[] = {\n', cppStr);
+                for i = 1:length(paramBindings)
+                    p = paramBindings(i);
+                    px4Type = 'PARAM_TYPE_FLOAT';
+                    if strcmp(p.type, 'int32'), px4Type = 'PARAM_TYPE_INT32'; end
+                    cppStr = sprintf('%s    {"%s", PARAM_INVALID, %s, {0}},\n', cppStr, p.px4_name, px4Type);
                 end
-                cppStr = sprintf('%s} simulink_params_t;\n\n', cppStr);
-                cppStr = sprintf('%sstatic simulink_params_t g_simulink_params = {};\n', cppStr);
-                cppStr = sprintf('%sstatic param_t g_param_handles[%d] = {};\n', cppStr, length(paramNames));
+                cppStr = sprintf('%s};\nstatic constexpr size_t g_simulink_param_count = %d;\n', cppStr, length(paramBindings));
                 cppStr = sprintf('%sstatic uORB::Subscription g_param_update_sub{ORB_ID(parameter_update)};\n\n', cppStr);
-                
+                cppStr = sprintf('%sstatic int find_simulink_param(const uint8_t name[17], param_type_t type) {\n', cppStr);
+                cppStr = sprintf('%s    for (size_t i = 0; i < g_simulink_param_count; ++i) {\n', cppStr);
+                cppStr = sprintf('%s        if (g_simulink_params[i].type == type && strncmp(reinterpret_cast<const char *>(name), g_simulink_params[i].name, 17) == 0) return (int)i;\n', cppStr);
+                cppStr = sprintf('%s    }\n    return -1;\n}\n\n', cppStr);
                 cppStr = sprintf('%sstatic void init_simulink_params() {\n', cppStr);
-                for i = 1:length(paramNames)
-                    % Map lowercase C-function name to UPPER_CASE PX4 parameter name
-                    cppStr = sprintf('%s    g_param_handles[%d] = param_find("%s");\n', cppStr, i-1, upper(paramNames{i}));
-                end
-                cppStr = sprintf('%s}\n\n', cppStr);
-                
-                cppStr = sprintf('%sstatic void update_simulink_params_impl() {\n', cppStr);
-                cppStr = sprintf('%s    if (g_param_update_sub.updated()) {\n', cppStr);
-                cppStr = sprintf('%s        parameter_update_s update;\n        g_param_update_sub.copy(&update);\n', cppStr);
-                for i = 1:length(paramNames)
-                    cppStr = sprintf('%s        if (g_param_handles[%d] != PARAM_INVALID) param_get(g_param_handles[%d], &g_simulink_params.%s);\n', cppStr, i-1, i-1, paramNames{i});
-                end
+                cppStr = sprintf('%s    for (size_t i = 0; i < g_simulink_param_count; ++i) {\n', cppStr);
+                cppStr = sprintf('%s        g_simulink_params[i].handle = param_find(g_simulink_params[i].name);\n', cppStr);
+                cppStr = sprintf('%s        if (g_simulink_params[i].handle != PARAM_INVALID && param_type(g_simulink_params[i].handle) == g_simulink_params[i].type) {\n', cppStr);
+                cppStr = sprintf('%s            if (g_simulink_params[i].type == PARAM_TYPE_FLOAT) (void)param_get(g_simulink_params[i].handle, &g_simulink_params[i].value.f);\n', cppStr);
+                cppStr = sprintf('%s            else (void)param_get(g_simulink_params[i].handle, &g_simulink_params[i].value.i);\n', cppStr);
+                cppStr = sprintf('%s        } else if (g_simulink_params[i].handle == PARAM_INVALID) {\n            PX4_WARN("parameter not found: %%s", g_simulink_params[i].name);\n            if (g_simulink_params[i].type == PARAM_TYPE_FLOAT) g_simulink_params[i].value.f = NAN;\n        } else {\n            PX4_ERR("parameter type mismatch: %%s", g_simulink_params[i].name);\n            g_simulink_params[i].handle = PARAM_INVALID;\n            if (g_simulink_params[i].type == PARAM_TYPE_FLOAT) g_simulink_params[i].value.f = NAN;\n        }\n', cppStr);
                 cppStr = sprintf('%s    }\n}\n\n', cppStr);
-                
-                for i = 1:length(paramNames)
-                    name = paramNames{i}; 
-                    cType = paramTypes{i};
-                    cppStr = sprintf('%s%s read_param_%s(void) { return g_simulink_params.%s; }\n\n', cppStr, cType, name, name);
-                    cppStr = sprintf('%svoid write_param_%s(%s value) {\n', cppStr, name, cType);
-                    if strcmp(cType, 'float')
-                        % PX4 Native: Use PX4_ISFINITE and C-style fabsf to avoid std:: and -Werror=float-equal
-                        cppStr = sprintf('%s    if (!PX4_ISFINITE(g_simulink_params.%s) || fabsf(g_simulink_params.%s - value) > 1e-6f) {\n', cppStr, name, name);
-                    else
-                        cppStr = sprintf('%s    if (g_simulink_params.%s != value) {\n', cppStr, name);
-                    end
-                    cppStr = sprintf('%s        g_simulink_params.%s = value;\n', cppStr, name);
-                    cppStr = sprintf('%s        if (g_param_handles[%d] != PARAM_INVALID) param_set(g_param_handles[%d], &value);\n', cppStr, i-1, i-1);
-                    cppStr = sprintf('%s    }\n}\n\n', cppStr);
-                end
+                cppStr = sprintf('%sstatic void update_simulink_params_impl() {\n    if (!g_param_update_sub.updated()) return;\n    parameter_update_s update;\n    g_param_update_sub.copy(&update);\n', cppStr);
+                cppStr = sprintf('%s    for (size_t i = 0; i < g_simulink_param_count; ++i) if (g_simulink_params[i].handle != PARAM_INVALID) {\n', cppStr);
+                cppStr = sprintf('%s        if (g_simulink_params[i].type == PARAM_TYPE_FLOAT) (void)param_get(g_simulink_params[i].handle, &g_simulink_params[i].value.f);\n        else (void)param_get(g_simulink_params[i].handle, &g_simulink_params[i].value.i);\n    }\n}\n\n', cppStr);
+            else
+                cppStr = sprintf('%sstatic simulink_param_t g_simulink_params[1] = {};\nstatic int find_simulink_param(const uint8_t[17], param_type_t) { return -1; }\nstatic void init_simulink_params() {}\nstatic void update_simulink_params_impl() {}\n\n', cppStr);
             end
+            cppStr = sprintf('%sfloat read_param_float(const uint8_t name[17]) { const int i = find_simulink_param(name, PARAM_TYPE_FLOAT); return i >= 0 ? g_simulink_params[i].value.f : NAN; }\n', cppStr);
+            cppStr = sprintf('%sint32_t read_param_int32(const uint8_t name[17]) { const int i = find_simulink_param(name, PARAM_TYPE_INT32); return i >= 0 ? g_simulink_params[i].value.i : 0; }\n', cppStr);
+            cppStr = sprintf('%svoid write_param_float(const uint8_t name[17], float value) { const int i = find_simulink_param(name, PARAM_TYPE_FLOAT); if (i >= 0 && g_simulink_params[i].handle != PARAM_INVALID && (!PX4_ISFINITE(g_simulink_params[i].value.f) || fabsf(g_simulink_params[i].value.f - value) > 1e-6f) && param_set(g_simulink_params[i].handle, &value) == PX4_OK) g_simulink_params[i].value.f = value; }\n', cppStr);
+            cppStr = sprintf('%svoid write_param_int32(const uint8_t name[17], int32_t value) { const int i = find_simulink_param(name, PARAM_TYPE_INT32); if (i >= 0 && g_simulink_params[i].handle != PARAM_INVALID && g_simulink_params[i].value.i != value && param_set(g_simulink_params[i].handle, &value) == PX4_OK) g_simulink_params[i].value.i = value; }\n\n', cppStr);
 
             cppStr = sprintf('%svoid update_simulink_params(void) {\n', cppStr);
-            if ~isempty(paramNames)
-                cppStr = sprintf('%s    update_simulink_params_impl();\n', cppStr); 
-            end
+            cppStr = sprintf('%s    update_simulink_params_impl();\n', cppStr);
             cppStr = sprintf('%s}\n\n', cppStr);
 
             cppStr = sprintf('%svoid init_px4_simulink_io(void) {\n\tg_initialized = true;\n', cppStr);
-            if ~isempty(paramNames)
-                cppStr = sprintf('%s\tinit_simulink_params();\n\tupdate_simulink_params_impl();\n', cppStr);
-            end
+            cppStr = sprintf('%s\tinit_simulink_params();\n', cppStr);
             cppStr = sprintf('%s}\n\n}\n', cppStr);
 
             if ~exist(outputDir, 'dir')

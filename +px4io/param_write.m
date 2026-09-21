@@ -81,13 +81,8 @@
 
 classdef param_write
     methods(Static)
-        % maskInitContext properties available:
-        %  - BlockHandle: Handle to the mask (this block)
-        %  - MaskObject: Simulink mask object
-        %  - MaskWorkspace: Access to mask parameter values
-        
         function MaskInitialization(maskInitContext)
-            px4io.px4API();
+            api = px4io.px4API();
 
             blockHandle = maskInitContext.BlockHandle;
             blockPath = getfullname(blockHandle);
@@ -101,26 +96,22 @@ classdef param_write
                 return;
             end
 
-            clean_param_name = lower(strtrim(param_name)); 
-            function_name = sprintf('write_param_%s', clean_param_name);
-
             if strcmp(param_type, 'int32')
                 in_data_type = 'int32';
-                c_type = 'int32_t';
+                function_name = 'write_param_int32';
             else
                 in_data_type = 'single';
-                c_type = 'float';
+                function_name = 'write_param_float';
             end
 
-            prototypeStr = sprintf('void %s(%s value);', function_name, c_type);
-            implStr = sprintf('void %s(%s value) { (void)value; }', function_name, c_type);
-
-            api = px4io.px4API();
-            api.ensureParamBinding(prototypeStr, implStr);
+            % The API is stable; the manifest is only for PX4 handle caching.
+            api.registerParamBinding(blockHandle, 'write');
 
             c_caller_path = [blockPath '/C_Caller'];
             inport_path = [blockPath '/In1'];
+            name_constant_path = [blockPath '/ParamName'];
 
+            api.setParamNameConstant(name_constant_path, param_name);
             set_param(c_caller_path, 'SampleTime', sample_time_val);
             set_param(inport_path, 'SampleTime', sample_time_val);
 
@@ -131,37 +122,10 @@ classdef param_write
         end
 
         function paramType = getParamDatatype(blockHandle)
-            % Retrieve parameter data type from mask parameter (with fallback).
-            %
-            % Attempts to read 'param_type' parameter, falling back to 'datatype'.
-            % Returns default 'int32' if neither is found.
-            %
-            % Input:
-            %   blockHandle - Simulink block handle
-            %
-            % Output:
-            %   paramType - Data type string ('int32', 'float32', 'single', etc.)
-            
             paramType = get_param(blockHandle, 'param_type');
         end
 
         function paramType = normalizeParamDatatype(paramType)
-            % Normalize parameter data type to canonical form.
-            %
-            % Converts various data type naming conventions to standard forms:
-            %   - 'float32', 'single' -> 'float' (uses write_px4_param_float)
-            %   - All others -> 'int32' (uses write_px4_param_int32)
-            %
-            % Important: Value change detection uses appropriate comparison:
-            %   - int32: Direct equality check
-            %   - float: Epsilon-based check (1e-6f) to avoid floating-point artifacts
-            %
-            % Input:
-            %   paramType - Raw parameter type string
-            %
-            % Output:
-            %   paramType - Normalized type ('float' or 'int32')
-            
             paramType = lower(strtrim(string(paramType)));
             if paramType == "single" || paramType == "float32"
                 paramType = 'float';

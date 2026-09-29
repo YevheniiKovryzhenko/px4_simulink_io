@@ -107,7 +107,7 @@ classdef px4API < handle
                 obj.loadOrbCacheFromJson();
                 obj.regenerateBusesInWorkspace();
             end
-        end        
+        end
 
         function regenerateBusesInWorkspace(obj)
             % REGENERATEBUSESINWORKSPACE - Restores Simulink Bus objects to the base workspace.
@@ -1404,6 +1404,11 @@ classdef px4API < handle
             api = sharedApi;
             api.ensureBusesInWorkspace();
         end
+
+        function forceGenerateAll()
+            px4api = px4io.getInstance();
+            px4api.generateAllBussesAndHeaders();
+        end   
 
         function resolvedPath = resolveAbsolutePath(pathStr)
             % RESOLVEABSOLUTEPATH - Normalizes paths (handles ~, ./, and ../).

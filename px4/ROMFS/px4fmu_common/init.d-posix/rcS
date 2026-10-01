@@ -27,6 +27,7 @@ fi
 
 # initialize script variables
 set VEHICLE_TYPE                none
+set SIMULINK_MODE               0
 set LOGGER_ARGS                 ""
 set LOGGER_BUF                  1000
 
@@ -283,15 +284,28 @@ then
 	tune_control play error
 fi
 
-#
+# Simulink operation mode selected by the airframe
+# 0 = Standard stock PX4 behavior
+# 1 = Standard vehicle setup + start Simulink modules at the end
+# 2 = Bypass standard setup, run custom apps only (Simulink Control)
+
 # Configure vehicle type specific parameters.
 # Note: rc.vehicle_setup is the entry point for all vehicle type specific setup.
-if [ -n "${SIM_CTRL_EN}" ]
+if [ "${SIMULINK_MODE}" = "2" ]
 then
-	#if we are using simulink for control, we should only setup a couple of parameters
+	# Mode 2: Full Simulink Control (Bypasses vehicle_setup)
+	echo "Configuring Simulink apps instead of standard vehicle setup..."
 	. ${R}etc/init.d/rc.simulink_apps
 else
+	# Mode 0, unset, or 1: Perform standard vehicle setup
+	echo "Performing standard vehicle setup..."
 	. ${R}etc/init.d/rc.vehicle_setup
+
+	# Mode 1: Guidance only (Runs apps after vehicle_setup completes)
+	if [ "${SIMULINK_MODE}" = "1" ]
+	then
+		. ${R}etc/init.d/rc.simulink_apps
+	fi
 fi
 
 

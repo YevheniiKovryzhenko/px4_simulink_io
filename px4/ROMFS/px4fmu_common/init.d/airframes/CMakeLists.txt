@@ -182,7 +182,11 @@ endif()
 
 
 if(CONFIG_MODULES_SIMULINK_IO)
+	if(NOT CONFIG_MODULES_MC_RATE_CONTROL)
+		px4_add_romfs_files(4019_x500_v2)
+	endif()
 	px4_add_romfs_files(
 		4030_x500_v2_simulink
+		4031_x500_v2_simulinkctrl
 	)
 endif()

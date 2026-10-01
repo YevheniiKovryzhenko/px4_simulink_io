@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# @name Holybro X500 V2 - Simulink Guidance
+# @name Holybro X500 V2 - Simulink Full Control
 #
 # @type Quadrotor x
 # @class Copter
@@ -11,14 +11,29 @@
 # @board bitcraze_crazyflie exclude
 #
 
-. ${R}etc/init.d/airframes/4019_x500_v2
-
+. ${R}etc/init.d/rc.mc_defaults
 
 # Declare the Simulink operation mode
 # 0 = Standard stock PX4 behavior (Default if unset)
 # 1 = Standard vehicle setup + start Simulink guidance/IO modules at the end
 # 2 = Bypass standard setup, run custom apps only (Full Simulink Control)
-set SIMULINK_MODE 1
+set SIMULINK_MODE 2
+
+param set-default IMU_GYRO_CUTOFF 30
+
+# Square quadrotor X PX4 numbering
+param set-default CA_ROTOR_COUNT 4
+param set-default CA_ROTOR0_PX 1
+param set-default CA_ROTOR0_PY 1
+param set-default CA_ROTOR1_PX -1
+param set-default CA_ROTOR1_PY -1
+param set-default CA_ROTOR2_PX 1
+param set-default CA_ROTOR2_PY -1
+param set-default CA_ROTOR2_KM -0.05
+param set-default CA_ROTOR3_PX -1
+param set-default CA_ROTOR3_PY 1
+param set-default CA_ROTOR3_KM -0.05
+
 
 # Simulink Guidance Parameters:
 param set-default SMG_EN 1

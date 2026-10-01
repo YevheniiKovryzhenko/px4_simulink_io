@@ -2,27 +2,29 @@
 #
 # Standard apps for simulink-deployed code.
 #
-#
 
-
-#
-# Multicopter setup.
-#
-if [ $VEHICLE_TYPE = mc ]
+# Only run land detector / airspeed setups if we bypassed the stock PX4 setup (Mode 2)
+if [ "${SIMULINK_MODE}" = "2" ]
 then
-	land_detector start multicopter
+	#
+	# Multicopter setup.
+	#
+	if [ "$VEHICLE_TYPE" = "mc" ]
+	then
+		land_detector start multicopter
+	fi
+
+	#
+	# VTOL setup.
+	#
+	if [ "$VEHICLE_TYPE" = "vtol" ]
+	then
+		airspeed_selector start
+		land_detector start vtol
+	fi
 fi
 
-
-#
-# VTOL setup.
-#
-if [ $VEHICLE_TYPE = vtol ]
-then
-	airspeed_selector start
-	land_detector start vtol
-fi
-
-
+# These modules start in both Mode 1 and Mode 2
+echo "Starting core Simulink modules..."
 simulink_io start
 simulink_guidance start

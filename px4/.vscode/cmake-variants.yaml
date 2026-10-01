@@ -11,6 +11,11 @@ CONFIG:
       buildType: RelWithDebInfo
       settings:
         CONFIG: px4_sitl_simulink
+    px4_sitl_simulinkctrl:
+      short: px4_sitl_simulinkctrl
+      buildType: RelWithDebInfo
+      settings:
+        CONFIG: px4_sitl_simulinkctrl
     px4_sitl_spacecraft:
       short: px4_sitl_spacecraft
       buildType: RelWithDebInfo
@@ -96,6 +101,11 @@ CONFIG:
       buildType: MinSizeRel
       settings:
         CONFIG: px4_fmu-v6c_simulink
+    px4_fmu-v6c_simulinkctrl:
+      short: px4_fmu-v6c_simulinkctrl
+      buildType: MinSizeRel
+      settings:
+        CONFIG: px4_fmu-v6c_simulinkctrl
     px4_fmu-v6c_bootloader:
       short: px4_fmu-v6c_bootloader
       buildType: MinSizeRel
@@ -326,16 +336,41 @@ CONFIG:
       buildType: MinSizeRel
       settings:
         CONFIG: cubepilot_cubeorange_test
+    cubepilot_cubeorange_default:
+      short: cubepilot_cubeorange_default
+      buildType: MinSizeRel
+      settings:
+        CONFIG: cubepilot_cubeorange_default
     cubepilot_cubeorange_simulink:
       short: cubepilot_cubeorange_simulink
       buildType: MinSizeRel
       settings:
         CONFIG: cubepilot_cubeorange_simulink
+    cubepilot_cubeorange_simulinkctrl:
+      short: cubepilot_cubeorange_simulinkctrl
+      buildType: MinSizeRel
+      settings:
+        CONFIG: cubepilot_cubeorange_simulinkctrl
     cubepilot_cubeorangeplus_test:
       short: cubepilot_cubeorangeplus
       buildType: MinSizeRel
       settings:
         CONFIG: cubepilot_cubeorangeplus_test
+    cubepilot_cubeorangeplus_default:
+      short: cubepilot_cubeorangeplus_default
+      buildType: MinSizeRel
+      settings:
+        CONFIG: cubepilot_cubeorangeplus_default
+    cubepilot_cubeorangeplus_simulink:
+      short: cubepilot_cubeorangeplus_simulink
+      buildType: MinSizeRel
+      settings:
+        CONFIG: cubepilot_cubeorangeplus_simulink
+    cubepilot_cubeorangeplus_simulinkctrl:
+      short: cubepilot_cubeorangeplus_simulinkctrl
+      buildType: MinSizeRel
+      settings:
+        CONFIG: cubepilot_cubeorangeplus_simulinkctrl
     emlid_navio2_default:
       short: emlid_navio2
       buildType: MinSizeRel

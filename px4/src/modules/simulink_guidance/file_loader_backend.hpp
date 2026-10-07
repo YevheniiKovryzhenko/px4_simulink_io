@@ -78,7 +78,7 @@ typedef struct traj_file_data_t
 	uint8_t i_int;     ///< Interval/segment index
 	uint8_t i_dof;     ///< Degree of freedom index (0=x, 1=y, 2=z, 3=yaw)
 	float t_int;       ///< Time duration of this interval
-	float coefs[10];   ///< Polynomial coefficients (up to 10th order)
+	float coefs[10];   ///< Polynomial coefficients (up to degree 9)
 } __attribute__((packed)) traj_file_data_t;
 
 /**
@@ -220,5 +220,7 @@ public:
 	const char* get_file(void);
 
 	file_loader_backend();
+	file_loader_backend(const file_loader_backend &) = delete;
+	file_loader_backend &operator=(const file_loader_backend &) = delete;
 	~file_loader_backend();
 };

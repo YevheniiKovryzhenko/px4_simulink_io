@@ -81,7 +81,7 @@ void reshape2D_into_1D(double* in_2D, double* out_1D, uint16_t size[2])
   int id = 0;
   for (uint16_t i = 0; i < size[0]; i++)
   {
-    double* tmp = &in_2D[i];
+    double* tmp = &in_2D[i * size[1]];
     for (uint16_t ii = 0; ii < size[1]; ii++)
     {
         out_1D[id] = tmp[ii];
@@ -95,7 +95,7 @@ void reshape1D_into_2D(double* in_1D, double* out_2D, int size[2])
   int id = 0;
   for (int i = 0; i < size[0]; i++)
   {
-    double* tmp = &out_2D[i];
+    double* tmp = &out_2D[i * size[1]];
     for (int ii = 0; ii < size[1]; ii++)
     {
         tmp[ii] = in_1D[id];
@@ -119,7 +119,7 @@ void printf_emxArray_real_T(emxArray_real_T* in)
   {
     printf("data[%i] = %f\n", i, in->data[i]);
   }
-  for(int i = 0; i < in->allocatedSize; i++)
+  for(int i = 0; i < in->numDimensions; i++)
   {
     printf("size[%i] = %i\n", i, in->size[i]);
   }
@@ -448,11 +448,11 @@ bool solve_trajectory_min_snap(double* wpts_data, uint16_t size[2], double Tf, b
               //for (int i_dim = 0; i_dim < n_dim; i_dim++)
               {
 
-                pp_out_tmp[i_seg * (int)(N_segments * n_dim) + i_coefs * (int)n_dim + i_dim] = pp->data[(i_dim + pp->size[2] * i_coefs) +\
+                pp_out_tmp[i_seg * (int)(N_COEFFS * n_dim) + i_coefs * (int)n_dim + i_dim] = pp->data[(i_dim + pp->size[2] * i_coefs) +\
                                                 pp->size[2] * N_COEFFS * i_seg];
                 //test_pt[i * y_size * z_size + ii * z_size + iii] = test[i][ii][iii];
                 //printf("%f ", pp_out[i_seg][i_coefs][i_dim]);
-                //pp_out[i_seg * (int)(N_segments * n_dim) + i_coefs * (int)n_dim + i_dim] = 0.0;
+                //pp_out[i_seg * (int)(N_COEFFS * n_dim) + i_coefs * (int)n_dim + i_dim] = 0.0;
               }
               //printf("]\n");
             }
@@ -551,11 +551,11 @@ bool solve_preset_traj(trajectory_type_t traj_type,\
 
   px4_usleep(10000);
 
-  solve_trajectory_min_snap(*wpts, wpts_size, *Tf, use_time_allocation, show_details,\
+  const bool solved = solve_trajectory_min_snap(*wpts, wpts_size, *Tf, use_time_allocation, show_details,\
         pp, *T_out, offsets, N_dim, N_segments);
 
   PX4_INFO("Trajectory: %s\nTime elapsed: %f s\n", get_trajectory_type_string(traj_type), static_cast<double>(hrt_absolute_time() - time_stamp) / 1000000.0);
-  return true;
+  return solved;
 }
 
 void test_solver_codegen(void)

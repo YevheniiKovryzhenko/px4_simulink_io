@@ -215,22 +215,6 @@ parameters:
               decimal: 4
     - group: SIM Stick Mapping Boundaries
       definitions:
-          SM_STK_VELXY_MAX:
-              description:
-                  short: Max horizontal velocity reference request from stick
-              type: float
-              unit: m/s
-              default: 3.0000
-              min: 0.0000
-              decimal: 4
-          SM_STK_VEL_Z_MAX:
-              description:
-                  short: Max vertical velocity reference request from stick
-              type: float
-              unit: m/s
-              default: 1.0000
-              min: 0.0000
-              decimal: 4
           SM_STK_ATT_MAX${i}:
               description:
                   short: Max roll pitch and yaw orientation bounding request from sticks
@@ -266,6 +250,140 @@ parameters:
               num_instances: 3
               instance_start: 1
               default: [1.9613, 1.9613, 0.9807]
+              decimal: 4
+          SM_STK_VEL_MAX${i}:
+              description:
+                  short: Max velocity bounding request from sticks
+              type: float
+              unit: m/s
+              num_instances: 3
+              instance_start: 1
+              default: [3.0000, 3.0000, 1.0000]
+              decimal: 4
+          SM_STK_ACC_MAX${i}:
+              description:
+                  short: Max acceleration bounding request from sticks
+              type: float
+              unit: m/s^2
+              num_instances: 3
+              instance_start: 1
+              default: [1.0000, 1.0000, 1.0000]
+              decimal: 4
+          SM_STK_MM_VELRX${i}:
+              description:
+                  short: Minimum and maximum velocity rate stick limit
+              type: float
+              unit: norm
+              num_instances: 2
+              instance_start: 1
+              default: [-0.2500, 0.2500]
+              decimal: 4
+          SM_STK_MM_VELRY${i}:
+              description:
+                  short: Minimum and maximum velocity rate stick limit
+              type: float
+              unit: norm
+              num_instances: 2
+              instance_start: 1
+              default: [-0.2500, 0.2500]
+              decimal: 4
+          SM_STK_MM_VELRZ${i}:
+              description:
+                  short: Minimum and maximum velocity rate stick limit
+              type: float
+              unit: norm
+              num_instances: 2
+              instance_start: 1
+              default: [0.0000, 0.0000]
+              decimal: 4
+          SM_STK_MM_ACCRX${i}:
+              description:
+                  short: Minimum and maximum acceleration rate stick limit
+              type: float
+              unit: norm
+              num_instances: 2
+              instance_start: 1
+              default: [-0.0500, 0.0500]
+              decimal: 4
+          SM_STK_MM_ACCRY${i}:
+              description:
+                  short: Minimum and maximum acceleration rate stick limit
+              type: float
+              unit: norm
+              num_instances: 2
+              instance_start: 1
+              default: [-0.0500, 0.0500]
+              decimal: 4
+          SM_STK_MM_ACCRZ${i}:
+              description:
+                  short: Minimum and maximum acceleration rate stick limit
+              type: float
+              unit: norm
+              num_instances: 2
+              instance_start: 1
+              default: [0.0000, 0.0000]
+              decimal: 4
+          SM_STK_VELR_T${i}:
+              description:
+                  short: Velocity rate filter time constant
+              type: float
+              unit: Hz
+              num_instances: 3
+              instance_start: 1
+              default: [0.2000, 0.2000, 0.2000]
+              min: 0.0000
+              decimal: 4
+          SM_STK_ACCR_T${i}:
+              description:
+                  short: Velocity rate filter time constant
+              type: float
+              unit: Hz
+              num_instances: 3
+              instance_start: 1
+              default: [0.2000, 0.2000, 0.2000]
+              min: 0.0000
+              decimal: 4
+          SM_STK_TRDS_CUT${i}:
+              description:
+                  short: Cuttoff fraction for desired transition logic
+              type: float
+              unit: norm
+              num_instances: 3
+              instance_start: 1
+              default: [0.8500, 0.8500, 0.8500]
+              min: 0.0000
+              max: 1.0000
+              decimal: 4
+          SM_STK_HWDS_CUT${i}:
+              description:
+                  short: Cuttoff fraction for desired hover logic
+              type: float
+              unit: norm
+              num_instances: 3
+              instance_start: 1
+              default: [0.2500, 0.2500, 0.2500]
+              min: 0.0000
+              max: 1.0000
+              decimal: 4
+          SM_STK_TRDS_T${i}:
+              description:
+                  short: Time delay for desired transition logic
+              type: float
+              unit: s
+              num_instances: 3
+              instance_start: 1
+              default: [2.0000, 2.0000, 2.0000]
+              min: 0.0000
+              decimal: 4
+          SM_STK_HVDS_T${i}:
+              description:
+                  short: Time delay for desired hover logic
+              type: float
+              unit: s
+              num_instances: 3
+              instance_start: 1
+              default: [0.5000, 0.5000, 0.5000]
+              min: 0.0000
               decimal: 4
     - group: SIM Multirotor Control
       definitions:

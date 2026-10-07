@@ -43,6 +43,7 @@
 #include <uORB/topics/parameter_update.h>
 #include <uORB/topics/sim_guidance_request.h>
 #include "trajectory.hpp"
+#include <containers/LockGuard.hpp>
 
 extern "C" __EXPORT int simulink_guidance_main(int argc, char *argv[]);
 
@@ -51,9 +52,9 @@ class SimulinkGuidance : public ModuleBase<SimulinkGuidance>, public ModuleParam
 {
 public:
 
-	SimulinkGuidance(int example_param);
+	SimulinkGuidance();
 
-	virtual ~SimulinkGuidance() = default;
+	virtual ~SimulinkGuidance() { pthread_mutex_destroy(&_trajectory_mutex); }
 
 	/** @see ModuleBase */
 	static int task_spawn(int argc, char *argv[]);
@@ -88,9 +89,12 @@ private:
 
 	void load_trajectory_from_params(void);
 
+	// Serializes CLI access with the worker, including file-loader access.
+	pthread_mutex_t _trajectory_mutex = PTHREAD_MUTEX_INITIALIZER;
 	trajectory traj{};
-
-	hrt_abstime	_boot_timestamp{0};
+	int32_t _last_traj_dir{-1};
+	int32_t _last_traj_id{-1};
+	int32_t _last_enable{0};
 
 
 	// Subscriptions
@@ -115,6 +119,7 @@ private:
 	DEFINE_PARAMETERS(
 		(ParamInt<px4::params::SMG_EN>) _param_smg_en,
 		(ParamInt<px4::params::SMG_OUT_TYPE>) _param_smg_out_type,
+		(ParamInt<px4::params::SMG_IN_TYPE>) _param_smg_in_type,
 		(ParamInt<px4::params::SMG_TRAJ_DIR>) _params_smg_traj_dir,
 		(ParamInt<px4::params::SMG_TRAJ_ID>) _params_smg_traj_id
 	)//MAKE SURE EVERY PARAMETER IS FOLLOWED BY "," AND LAST ONE DOES NOT HAVE ANYTHING

@@ -76,6 +76,7 @@ file_loader_backend::file_loader_backend()
 
 file_loader_backend::~file_loader_backend()
 {
+	close_file();
 }
 
 int file_loader_backend::list_dirs(const char* location)
@@ -191,7 +192,7 @@ static int concatenatePaths(char* result, size_t result_size, const char* direct
 int file_loader_backend::list_abs_path(const char* location)
 {
 	char resolved_path[256];
-	resolve_abs_path(resolved_path, location);
+	if (resolve_abs_path(resolved_path, location) < 0) { return -1; }
 	PX4_INFO("Absolute path: %s", resolved_path);
 	return 0;
 }
@@ -259,7 +260,8 @@ int file_loader_backend::set_src(const char* _file, const char* _dir)
 	}
 
 	// Validate filename length
-	if (strlen(_file) >= sizeof(file_name)) {
+	if (_file[0] == '\0' || _dir[0] == '\0' || strlen(_dir) >= sizeof(directory)
+	    || strlen(_file) >= sizeof(file_name)) {
 		PX4_ERR("Filename too long: %s", _file);
 		return -1;
 	}
@@ -498,6 +500,7 @@ int file_loader_backend::read_header(traj_file_header_t& header)
 	if (open_file() < 0)
 	{
 		PX4_ERR("Failed to open file");
+		close_file();
 		return -1;
 	}
 
@@ -505,11 +508,13 @@ int file_loader_backend::read_header(traj_file_header_t& header)
 	if (bytes_read < 0)
 	{
 		PX4_ERR("Failed to read header from fd %d: %s", _fd, strerror(errno));
+		close_file();
 		return -1;
 	}
 	if (bytes_read != sizeof(traj_file_header_t))
 	{
 		PX4_ERR("Incomplete header read: %ld of %zu bytes", (long)bytes_read, sizeof(traj_file_header_t));
+		close_file();
 		return -1;
 	}
 
@@ -566,6 +571,7 @@ int file_loader_backend::read_data(traj_file_data_t& data)
 	if (open_file() < 0)
 	{
 		PX4_ERR("Failed to open file");
+		close_file();
 		return -1;
 	}
 
@@ -573,16 +579,19 @@ int file_loader_backend::read_data(traj_file_data_t& data)
 	if (bytes_read < 0)
 	{
 		PX4_ERR("Failed to read data from fd %d: %s", _fd, strerror(errno));
+		close_file();
 		return -1;
 	}
 	if (bytes_read == 0)
 	{
 		// End of file reached - not necessarily an error
+		close_file();
 		return -1;
 	}
 	if (bytes_read != sizeof(traj_file_data_t))
 	{
 		PX4_ERR("Incomplete data read: %ld of %zu bytes", (long)bytes_read, sizeof(traj_file_data_t));
+		close_file();
 		return -1;
 	}
 
@@ -604,14 +613,16 @@ int file_loader_backend::write_data(traj_file_data_t& data)
 		char full_path[PATH_BUFFER_SIZE];
 		if (concatenatePaths(full_path, sizeof(full_path), directory, file_name) < 0) {
 			PX4_ERR("Failed to construct full file path for writing");
-			return -1;
+			close_file();
+		return -1;
 		}
 
 		_fd = open(full_path, O_WRONLY | O_APPEND, 0644);
 		if (_fd < 0)
 		{
 			PX4_ERR("Can't open file for writing %s: %s", full_path, strerror(errno));
-			return -1;
+			close_file();
+		return -1;
 		}
 	}
 
@@ -619,11 +630,13 @@ int file_loader_backend::write_data(traj_file_data_t& data)
 	if (bytes_written < 0)
 	{
 		PX4_ERR("Failed to write data to fd %d: %s", _fd, strerror(errno));
+		close_file();
 		return -1;
 	}
 	if (bytes_written != sizeof(traj_file_data_t))
 	{
 		PX4_ERR("Incomplete data write: %ld of %zu bytes", (long)bytes_written, sizeof(traj_file_data_t));
+		close_file();
 		return -1;
 	}
 	return 0;

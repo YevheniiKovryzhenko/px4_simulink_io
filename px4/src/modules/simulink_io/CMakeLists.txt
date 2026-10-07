@@ -33,8 +33,8 @@
 #  ****************************************************************************/
 
 # Separate your globbing to make sure it handles files accurately
-file(GLOB SIMULINK_C_SRCS "generated_code/*.c")
-file(GLOB SIMULINK_CPP_SRCS "generated_code/*.cpp")
+file(GLOB SIMULINK_C_SRCS CONFIGURE_DEPENDS "generated_code/*.c")
+file(GLOB SIMULINK_CPP_SRCS CONFIGURE_DEPENDS "generated_code/*.cpp")
 
 # The land detector still needs these parameters without the stock controller.
 set(simulink_module_config module.yaml)

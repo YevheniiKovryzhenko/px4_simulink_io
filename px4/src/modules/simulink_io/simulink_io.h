@@ -35,6 +35,7 @@
 #pragma once
 
 #include <px4_platform_common/module.h>
+#include <perf/perf_counter.h>
 
 // Include the auto-generated model-agnostic wrapper (works with any model name)
 #include "simulink_model_wrapper.h"
@@ -45,7 +46,7 @@ class SimulinkIO : public ModuleBase<SimulinkIO>
 {
 public:
     SimulinkIO() = default;
-    virtual ~SimulinkIO() = default;
+    ~SimulinkIO() override;
 
     /** @see ModuleBase */
     static int task_spawn(int argc, char *argv[]);
@@ -66,6 +67,10 @@ public:
     int print_status() override;
 
 private:
-    // Instantiate your generated Simulink model using the model-agnostic wrapper
+    perf_counter_t _cycle_perf{perf_alloc(PC_ELAPSED, MODULE_NAME ": cycle")};
+    perf_counter_t _interval_perf{perf_alloc(PC_INTERVAL, MODULE_NAME ": interval")};
+    perf_counter_t _overrun_perf{perf_alloc(PC_COUNT, MODULE_NAME ": overruns")};
+
+    // The generated adapter provides the complete model-specific interface.
     SimulinkWrapper::SimulinkModel _simulink_model;
 };

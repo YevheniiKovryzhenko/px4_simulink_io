@@ -33,18 +33,18 @@
  ****************************************************************************/
 
 #include "simulink_guidance.h"
-#include <px4_platform_common/getopt.h>
 #include <px4_platform_common/log.h>
 #include <px4_platform_common/posix.h>
 
 #include <math.h>
 #include <uORB/topics/parameter_update.h>
 #include <dirent.h>
-//#include "waypoints.hpp"
+#include <sys/stat.h>
 
 
 int SimulinkGuidance::print_status()
 {
+	LockGuard lock{_trajectory_mutex};
 	PX4_INFO("Running");
 	traj.print_status();
 
@@ -53,187 +53,46 @@ int SimulinkGuidance::print_status()
 
 int SimulinkGuidance::custom_command(int argc, char *argv[])
 {
-
-	if (!is_running()) {
-		print_usage("not running");
-		return 1;
+	if (!is_running()) { return print_usage("not running"); }
+	LockGuard lock{get_instance()->_trajectory_mutex};
+	auto &instance = *get_instance();
+	if (argc == 0) { return print_usage("missing command"); }
+	if (!strcmp(argv[0], "set_src")) {
+		if (argc != 2 && argc != 3) { return print_usage("set_src <file> or <directory> <file>"); }
+		const char *directory = argc == 3 ? argv[1] : instance.traj.file_loader.get_dir();
+		const char *filename = argv[argc - 1];
+		char normalized_file[256], normalized_directory[256];
+		if (instance.traj.file_loader.normalize_paths(normalized_file, normalized_directory, filename, directory) < 0) {
+			return PX4_ERROR;
+		}
+		return instance.traj.set_src(normalized_directory, normalized_file);
 	}
-
-
-
-	// additional custom commands can be handled like this:
-	for (int i = 0; i < argc; i++)
-	{
-		if (!strcmp(argv[i], "set_src")) {
-			// Check argument count: need at least 1 argument (filename)
-			if (argc < i + 2) {
-				PX4_WARN("Usage: set_src <file_name> or set_src <directory> <file_name>");
-				print_usage();
-				return 0;
-			}
-
-			const char *dir_arg = nullptr;
-			const char *file_arg = nullptr;
-
-			// Parse arguments: 1 arg = filename only, 2 args = directory + filename
-			if (argc >= i + 3) {
-				// Two arguments: directory and filename
-				dir_arg = argv[i + 1];
-				file_arg = argv[i + 2];
-			} else {
-				// One argument: filename only, use current directory
-				dir_arg = get_instance()->traj.file_loader.get_dir();
-				file_arg = argv[i + 1];
-			}
-
-			// Normalize paths (handles .traj extension, trailing slashes, etc.)
-			char normalized_file[256];
-			char normalized_dir[256];
-			if (get_instance()->traj.file_loader.normalize_paths(
-				normalized_file, normalized_dir, file_arg, dir_arg) < 0) {
-				PX4_WARN("Failed to normalize file paths");
-				return 0;
-			}
-			PX4_INFO("normalized_dir=%s, normalized_file=%s", normalized_dir, normalized_file);
-
-			// Set source with normalized paths
-			if (get_instance()->traj.set_src(normalized_dir, normalized_file) < 0) {
-				PX4_WARN("Failed to set trajectory file");
-				return 0;
-			}
-			return 0;
+	if (!strcmp(argv[0], "trajectory")) {
+		if (argc != 2) { return print_usage("trajectory <start|stop|reset|execute|set_home>"); }
+		if (instance._param_smg_en.get() == 0) {
+			PX4_WARN("Enable SMG_EN before issuing trajectory commands");
+			return PX4_ERROR;
 		}
-		else if(!strcmp(argv[i], "trajectory"))
-		{
-			if (argc < i + 2) {
-				PX4_WARN("Usage: trajectory <start|stop|reset|execute>");
-				return 0;
-			}
-
-			const char *cmd = argv[i + 1];
-			sim_guidance_request_s request{};
-			request.timestamp = hrt_absolute_time();
-
-			if (!strcmp(cmd, "start")) {
-				request.start = true;
-				PX4_INFO("Starting trajectory guidance");
-			}
-			else if (!strcmp(cmd, "stop")) {
-				request.stop = true;
-				PX4_INFO("Stopping trajectory guidance");
-			}
-			else if (!strcmp(cmd, "reset")) {
-				request.reset = true;
-				PX4_INFO("Resetting trajectory guidance");
-			}
-			else if (!strcmp(cmd, "execute")) {
-				request.start_execution = true;
-				PX4_INFO("Executing trajectory");
-			}
-			else if (!strcmp(cmd, "set_home")) {
-				request.set_home = true;
-				PX4_INFO("Setting home position");
-			}
-			else {
-				PX4_WARN("Unknown trajectory command: %s", cmd);
-				PX4_WARN("Available commands: start, stop, reset, execute, set_home");
-				return 0;
-			}
-
-			// Publish the request
-			get_instance()->_sim_guidance_request_pub.publish(request);
-			return 0;
-		}
-		else if(!strcmp(argv[i], "ls"))
-		{
-			if (argc < i+2)
-			{
-				const char* directory_ = get_instance()->traj.file_loader.get_dir();
-				//PX4_WARN("Please specify a directory");
-				if (get_instance()->traj.file_loader.list_dirs(directory_) < 0)
-				{
-					PX4_WARN("Failed to list directories");
-					return 0;
-				}
-				if (get_instance()->traj.file_loader.list_files(directory_) < 0)
-				{
-					PX4_WARN("Failed to list files");
-					return 0;
-				}
-				return 0;
-			}
-			else
-			{
-				const char *directory_ = nullptr;
-				directory_ = argv[i+1];
-				if (get_instance()->traj.file_loader.list_dirs(directory_) < 0)
-				{
-					PX4_WARN("Failed to list directories");
-					return 0;
-				}
-				if (get_instance()->traj.file_loader.list_files(directory_) < 0)
-				{
-					PX4_WARN("Failed to list files");
-					return 0;
-				}
-				return 0;
-			}
-
-		}
-		else if(!strcmp(argv[i], "test"))
-		{
-			if (argc < i+2)
-			{
-				const char* directory_ = get_instance()->traj.file_loader.get_dir();
-				//PX4_WARN("Please specify a directory");
-				if (get_instance()->traj.file_loader.list_dirs(directory_) < 0)
-				{
-					PX4_WARN("Failed to list directories");
-					return 0;
-				}
-				if (get_instance()->traj.file_loader.list_files(directory_) < 0)
-				{
-					PX4_WARN("Failed to list files");
-					return 0;
-				}
-				return 0;
-			}
-			else if (argc - 1 > i)
-			{
-				if (!strcmp(argv[i+1], "solver"))
-				{
-					//test_solver_codegen();
-					return 0;
-				}
-				else
-				{
-					PX4_WARN("Uknown test routine. \n\
-						Please specify test routine from the list:\n\
-						solver");
-					return 0;
-				}
-			}
-			else
-			{
-				const char *directory_ = nullptr;
-				directory_ = argv[i+1];
-				if (get_instance()->traj.file_loader.list_dirs(directory_) < 0)
-				{
-					PX4_WARN("Failed to list directories");
-					return 0;
-				}
-				if (get_instance()->traj.file_loader.list_files(directory_) < 0)
-				{
-					PX4_WARN("Failed to list files");
-					return 0;
-				}
-				return 0;
-			}
-		}
-		else continue;
+		sim_guidance_request_s request{};
+		request.timestamp = hrt_absolute_time();
+		if (!strcmp(argv[1], "start")) { request.start = true; }
+		else if (!strcmp(argv[1], "stop")) { request.stop = true; }
+		else if (!strcmp(argv[1], "reset")) { request.reset = true; }
+		else if (!strcmp(argv[1], "execute")) { request.start_execution = true; }
+		else if (!strcmp(argv[1], "set_home")) { request.set_home = true; }
+		else { return print_usage("unknown trajectory command"); }
+		return instance._sim_guidance_request_pub.publish(request) ? PX4_OK : PX4_ERROR;
 	}
-
-
+	if (!strcmp(argv[0], "ls")) {
+		if (argc > 2) { return print_usage("ls [directory]"); }
+		const char *directory = argc == 2 ? argv[1] : instance.traj.file_loader.get_dir();
+		if (instance.traj.file_loader.list_dirs(directory) < 0) { return PX4_ERROR; }
+		return instance.traj.file_loader.list_files(directory);
+	}
+	if (!strcmp(argv[0], "test")) {
+		PX4_WARN("The onboard solver is not built; run the host guidance regression tests");
+		return PX4_ERROR;
+	}
 	return print_usage("unknown command");
 }
 
@@ -242,15 +101,7 @@ void SimulinkGuidance::load_trajectory_from_params()
 	int32_t traj_dir_select = _params_smg_traj_dir.get();
 	int32_t traj_id         = _params_smg_traj_id.get();
 
-	// Isolated static cache variables.
-	// Initialized to an impossible state (-1) to guarantee an execution pass on the very first boot.
-	static int32_t last_traj_dir_select = -1;
-	static int32_t last_traj_id         = -1;
-
-	// ABORT EARLY: If the parameters have not drifted from our last recorded state, exit immediately.
-	// This perfectly protects manual CLI overrides because if the user doesn't touch the parameters,
-	// this condition is true and the function exits silently.
-	if (traj_dir_select == last_traj_dir_select && traj_id == last_traj_id) {
+	if (traj_dir_select == _last_traj_dir && traj_id == _last_traj_id) {
 		return;
 	}
 
@@ -280,17 +131,32 @@ void SimulinkGuidance::load_trajectory_from_params()
 	struct dirent *entry;
 	char discovered_filename[256] = "";
 
+	bool duplicate = false;
 	while ((entry = readdir(dir_handle)) != nullptr) {
-	if (entry->d_name[0] == '.') {
-		continue; // Clean character-literal check to skip hidden folders
-	}
-
-	if (strncmp(entry->d_name, prefix_token, strlen(prefix_token)) == 0) {
+		const size_t length = strlen(entry->d_name);
+		if (strncmp(entry->d_name, prefix_token, strlen(prefix_token)) != 0
+		    || length < 5 || strcasecmp(entry->d_name + length - 5, ".traj") != 0) {
+			continue;
+		}
+		char path[512];
+		const int written = snprintf(path, sizeof(path), "%s%s", dir_arg, entry->d_name);
+		struct stat info{};
+		if (written < 0 || static_cast<size_t>(written) >= sizeof(path)
+		    || stat(path, &info) != 0 || !S_ISREG(info.st_mode)) {
+			continue;
+		}
+		if (discovered_filename[0] != '\0') {
+			duplicate = true;
+			break;
+		}
 		strncpy(discovered_filename, entry->d_name, sizeof(discovered_filename) - 1);
-		break;
-	}
 	}
 	closedir(dir_handle);
+
+	if (duplicate) {
+		PX4_ERR("Multiple trajectory files match %s", prefix_token);
+		return;
+	}
 
 	// Fallback safely if no matching prefix asset was found inside the folder
 	if (strlen(discovered_filename) == 0) {
@@ -303,8 +169,8 @@ void SimulinkGuidance::load_trajectory_from_params()
 		PX4_ERR("Auto-load: Backend rejected source files configuration");
 	} else {
 		// Update the tracking cache ONLY after a successful registration setup
-		last_traj_dir_select = traj_dir_select;
-		last_traj_id         = traj_id;
+		_last_traj_dir = traj_dir_select;
+		_last_traj_id = traj_id;
 
 		PX4_INFO("Successfully loaded trajectory asset: %s", discovered_filename);
 	}
@@ -318,7 +184,7 @@ int SimulinkGuidance::task_spawn(int argc, char *argv[])
 	_task_id = px4_task_spawn_cmd("simulink_guidance",
 				      SCHED_DEFAULT,
 				      SCHED_PRIORITY_DEFAULT - 5,
-				      1800,
+				      4096,
 				      (px4_main_t)&run_trampoline,
 				      (char *const *)argv);
 
@@ -332,55 +198,16 @@ int SimulinkGuidance::task_spawn(int argc, char *argv[])
 
 SimulinkGuidance *SimulinkGuidance::instantiate(int argc, char *argv[])
 {
-	int example_param = 0;
-	const char *file_string = nullptr;
-	bool error_flag = false;
-
-	int myoptind = 1;
-	int ch;
-	const char *myoptarg = nullptr;
-
-	// parse CLI arguments
-	while ((ch = px4_getopt(argc, argv, "p:f:", &myoptind, &myoptarg)) != EOF) {
-		switch (ch) {
-		case 'p':
-			example_param = (int)strtol(myoptarg, nullptr, 10);
-			PX4_INFO("p=%i",example_param);
-			break;
-
-		case 'f':
-			file_string = myoptarg;
-
-			PX4_INFO("f=%s",file_string);
-			break;
-
-		case '?':
-			error_flag = true;
-			break;
-
-		default:
-			PX4_WARN("unrecognized flag");
-			error_flag = true;
-			break;
-		}
-	}
-
-	if (error_flag) {
+	if (argc > 1) {
+		print_usage("Use set_src after starting the module");
 		return nullptr;
 	}
-
-	SimulinkGuidance *instance = new SimulinkGuidance(example_param);
-
-	if (instance == nullptr) {
-		PX4_ERR("alloc failed");
-	}
-
-	return instance;
+	return new SimulinkGuidance();
 }
 
-SimulinkGuidance::SimulinkGuidance(int example_param)
-	: ModuleParams(nullptr)
+SimulinkGuidance::SimulinkGuidance() : ModuleParams(nullptr)
 {
+	_sim_guidance_request_pub.advertise();
 }
 
 //#define DEBUG
@@ -389,42 +216,33 @@ SimulinkGuidance::SimulinkGuidance(int example_param)
 
 void SimulinkGuidance::run()
 {
-	// initialize parameters
-	parameters_update(true);
-
-	_boot_timestamp = hrt_absolute_time();
-	while (!should_exit()) {
-		parameters_update(); // update parameters
-		update_guidance(); //update everything related to simulink
-
-		px4_usleep(5000);// don't update too frequenty
-	}
-}
-
-template <typename Type, size_t M>
-void assign_1Darray2Vector(matrix::Vector<Type, M> *output_Vec, Type input_1Darray[M])
-{
-	for (int i = 0; i < M; i++) output_Vec(i) = input_1Darray[i];
-	return;
-}
-
-void SimulinkGuidance::update_guidance(void)
-{
-	int32_t enable_fl = _param_smg_en.get();
-
-
-	if (enable_fl > 0)
 	{
-		#ifdef DEBUG
-		PX4_INFO("Updating main loop");
-		#endif
-		traj.update(enable_fl == 2);
-
+		LockGuard lock{_trajectory_mutex};
+		parameters_update(true);
 	}
-
-
+	while (!should_exit()) {
+		{
+			LockGuard lock{_trajectory_mutex};
+			parameters_update();
+			update_guidance();
+		}
+		px4_usleep(5000);
+	}
+	LockGuard lock{_trajectory_mutex};
+	traj.disable();
 }
 
+void SimulinkGuidance::update_guidance()
+{
+	const int32_t enable = _param_smg_en.get();
+	if (enable != _last_enable) {
+		traj.disable();
+		_last_enable = enable;
+	}
+	if (enable > 0) {
+		traj.update(enable == 2);
+	}
+}
 
 
 void SimulinkGuidance::parameters_update(bool force)
@@ -437,6 +255,7 @@ void SimulinkGuidance::parameters_update(bool force)
 
 		// Synchronize the macro values from the central storage backend
 		updateParams();
+		traj.configure(_param_smg_in_type.get(), _param_smg_out_type.get());
 
 		// Check if trajectory needs to be loaded
 		load_trajectory_from_params();
@@ -477,8 +296,6 @@ $ simulink_guidance trajectory reset     # Reset trajectory state
 $ simulink_guidance trajectory execute   # Begin trajectory evaluation
 $ simulink_guidance trajectory set_home  # Set home at current position
 
-Test trajectory solver:
-$ simulink_guidance test solver
 
 )DESCR_STR");
 
@@ -493,8 +310,6 @@ $ simulink_guidance test solver
 	PRINT_MODULE_USAGE_ARG("reset", "Reset trajectory state to initial conditions", false);
 	PRINT_MODULE_USAGE_ARG("execute", "Begin trajectory evaluation and tracking", false);
 	PRINT_MODULE_USAGE_ARG("set_home", "Set home position at current vehicle location", false);
-	PRINT_MODULE_USAGE_COMMAND("test");
-	PRINT_MODULE_USAGE_ARG("solver", "Test solver code generation", false);
 	PRINT_MODULE_USAGE_DEFAULT_COMMANDS();
 
 	return 0;

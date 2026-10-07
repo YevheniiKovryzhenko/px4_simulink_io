@@ -5,7 +5,7 @@
 # @type Quadrotor x
 # @class Copter
 #
-# @maintainer Yevhenii Kovryzhenko <yzk0058@auburn.edu>
+# @maintainer Yevhenii Kovryzhenko <yevhenii.kovryzhenko@okstate.edu>
 #
 # @board px4_fmu-v2 exclude
 # @board bitcraze_crazyflie exclude

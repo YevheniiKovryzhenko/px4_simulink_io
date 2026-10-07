@@ -32,23 +32,20 @@
 %  *
 %  ****************************************************************************/
 
-% px4API - PX4/Simulink Integration Code Generator
+% px4API - Generate the Simulink/PX4 message and parameter interface.
 %
-% This class generates strongly-typed C++ glue code and Simulink bus definitions
-% for seamless PX4 uORB topic communication and zero-overhead parameter access 
-% from Simulink models.
+% The static C API exposes all discovered messages to Simulink C Caller blocks.
+% The post-code-generation callback emits model-specific hardware glue and
+% exports the completed build into the configured PX4 module directory.
 %
-% Key Architectural Decisions:
-%   1. Monolithic Static API: Generates a complete, static C header/source file 
-%      for all uORB topics to prevent Simulink C Caller cache invalidation issues.
-%   2. Zero-Overhead Parameters: Uses regex to extract parameter usage from the 
-%      Simulink model and generates a highly optimized C++ bridge using cached 
-%      param_t handles and uORB boolean flags (no mutex locks in the control loop).
-%   3. PX4 Native Math: Uses PX4_ISFINITE and fabsf to satisfy strict PX4 
-%      compiler flags (-Werror=float-equal) without relying on the C++ std:: namespace.
+% Parameter bindings come from model blocks. Generated readers use cached
+% values; initialization resolves PX4 handles and update notifications refresh
+% the cache. Parameter writes still call the PX4 parameter API.
 %
 % Usage:
-%   api = px4API();          % Initialize (auto-regenerates if needed)
+%   api = px4io.px4API.getInstance();  % Initialize or reuse the editor-time API.
+%   px4io.px4API.runPostCodeGen(buildInfo);  % Model PostCodeGenCommand callback.
+% Model settings are managed separately by px4io.deployment.configureModel.
 
 classdef px4API < handle
     properties
@@ -212,9 +209,9 @@ classdef px4API < handle
         function syncParamBindings(obj, modelName)
             % SYNCPARAMBINDINGS - Rebuild the manifest from the current model.
             %
-            % This is the authoritative, once-per-build scan. It intentionally
-            % replaces the previous manifest, which removes bindings for blocks that
-            % the user deleted or that are no longer active.
+            % Scan the root and referenced models, then replace the manifest.
+            % Bindings for deleted blocks disappear. This scans subsystem blocks;
+            % it does not infer parameter usage from generated C symbols.
             if nargin < 2 || isempty(modelName)
                 modelName = bdroot;
             end
@@ -223,7 +220,12 @@ classdef px4API < handle
                 return;
             end
 
-            blocks = find_system(modelName, 'LookUnderMasks', 'on', 'BlockType', 'SubSystem');
+            models = find_mdlrefs(modelName, 'KeepModelsLoaded', true);
+            blocks = {};
+            for modelIndex = 1:numel(models)
+                found = find_system(models{modelIndex}, 'LookUnderMasks', 'on', 'FollowLinks', 'on', 'BlockType', 'SubSystem');
+                blocks = [blocks; found(:)];
+            end
             bindings = struct('px4_name', {}, 'symbol', {}, 'type', {}, ...
                 'read', {}, 'write', {}, 'blocks', {});
 
@@ -529,7 +531,7 @@ classdef px4API < handle
             glueTime = dir(checkPath).datenum;
 
             generatorFiles = {fullfile(obj.PackageRoot, 'px4API.m'), fullfile(obj.PackageRoot, 'uORB_read.m'), ...
-                              fullfile(obj.PackageRoot, 'uORB_write.m'), fullfile(obj.PackageRoot, 'uORB_msg.m')};
+                              fullfile(obj.PackageRoot, 'uORB_write.m'), fullfile(obj.PackageRoot, 'uORB_msg.m'), fullfile(obj.PackageRoot, 'deployment.m')};
             genTimes = [];
             for i = 1:numel(generatorFiles)
                 if exist(generatorFiles{i}, 'file') == 2
@@ -538,7 +540,7 @@ classdef px4API < handle
             end
             newestGenTime = max([genTimes, -inf]);
 
-            if max([hdrTime, srcTime, glueTime]) >= max(newestMsg, newestGenTime)
+            if min([hdrTime, srcTime, glueTime]) >= max(newestMsg, newestGenTime)
                 needed = false; 
                 reason = 'generated files are newer';
             else
@@ -594,9 +596,10 @@ classdef px4API < handle
                 topicEntry = obj.OrbCache.topics.(topicName);
                 if isfield(topicEntry, 'fields')
                     fieldsArray = topicEntry.fields;
-                    if iscell(fieldsArray)
-                        fieldsArray = fieldsArray{1}; 
+                    while iscell(fieldsArray) && isscalar(fieldsArray)
+                        fieldsArray = fieldsArray{1};
                     end
+                    if iscell(fieldsArray), fieldsArray = [fieldsArray{:}]; end
                     if isstruct(fieldsArray) && ~isempty(fieldsArray)
                         fieldMetadata = table({fieldsArray(:).name}', {fieldsArray(:).type}', ...
                             [fieldsArray(:).arraySize]', 'VariableNames', {'fieldName', 'fieldType', 'arraySize'});
@@ -605,12 +608,19 @@ classdef px4API < handle
             end
         end
 
+        function topic = resolveOrbTopic(obj, name)
+            % RESOLVEORBTOPIC Keep explicit variants; map base aliases to the first topic.
+            base = obj.getBaseTopicForVariant(name);
+            variants = obj.getTopicVariants(base);
+            topic = name;
+            if ~any(strcmp(variants, name)), topic = variants{1}; end
+        end
+
         function variants = getTopicVariants(obj, topicName)
             % GETTOPICVARIANTS - Resolves uORB topic variants from the cache.
             %
-            % Handles a critical MATLAB jsondecode quirk: single-element JSON arrays 
-            % are decoded as raw char vectors instead of 1x1 cell arrays. This method 
-            % guarantees the output is ALWAYS a cell array to prevent downstream crashes.
+            % Normalize cached char/string/cell representations into a row cell
+            % array so consumers can concatenate topic names consistently.
             %
             % Inputs:
             %   topicName - Base or variant topic name
@@ -652,13 +662,14 @@ classdef px4API < handle
                     variants = {topicName}; 
                 end
             end
+            variants = reshape(variants, 1, []);
         end
 
         function baseTopic = getBaseTopicForVariant(obj, topicName)
             % GETBASETOPICFORVARIANT - Maps a variant name back to its base message struct.
             %
-            % E.g., maps 'actuator_controls_0' back to 'actuator_controls'.
-            % Includes safety checks for the jsondecode char vector quirk.
+            % For example, vehicle_attitude_groundtruth uses vehicle_attitude_s.
+            % Cached variants may be stored as char vectors or cell arrays.
             
             baseTopic = topicName;
             if isfield(obj.OrbCache, 'topics')
@@ -681,8 +692,8 @@ classdef px4API < handle
         function saveOrbCache(obj)
             % SAVEORBCACHE - Persists the in-memory metadata cache to a JSON file.
             %
-            % Drastically speeds up subsequent MATLAB startups by avoiding the 
-            % need to re-parse hundreds of PX4 .msg files.
+            % Stores parsed fields and variants so a new API instance can
+            % restore buses without parsing every .msg file again.
             
             if ~exist(obj.LocalGeneratedDir, 'dir')
                 mkdir(obj.LocalGeneratedDir); 
@@ -721,10 +732,9 @@ classdef px4API < handle
             % Scans all PX4 .msg files, topologically sorts struct dependencies, 
             % and generates a complete, static C header and source file. 
             %
-            % Architectural Note: We generate ALL topics at once (rather than 
-            % dynamically per-mask) because Simulink's C Caller block caches 
-            % available functions in memory. Dynamically mutating the header file 
-            % causes severe cache invalidation and "function not recognized" errors.
+            % Generate the complete API for C Caller function discovery. Blocks
+            % share this header; selecting a topic does not rewrite it. Hardware
+            % glue is generated separately for calls used by the current build.
             
             msgDir = fullfile(obj.PX4Root, 'msg');
             if ~exist(msgDir, 'dir')
@@ -830,12 +840,16 @@ classdef px4API < handle
 
             % C-Linkage Prototypes
             h = sprintf('%s#ifdef __cplusplus\nextern "C" {\n#endif\n\n', h);
-            for i = 1:length(msgFiles)
-                [~, camelName, ~] = fileparts(msgFiles(i).name);
-                topicName = obj.camelCaseToSnakeCase(camelName);
-                h = sprintf('%s%s_s read_%s(void);\n', h, topicName, topicName);
-                h = sprintf('%svoid write_%s(%s_s in);\n', h, topicName, topicName);
-                h = sprintf('%s%s_s init_%s(bool initialize_to_nan);\n', h, topicName, topicName);
+            baseTopics = fieldnames(obj.OrbCache.topics);
+            for i = 1:numel(baseTopics)
+                base = baseTopics{i};
+                variants = unique([{base}, obj.getTopicVariants(base)], 'stable');
+                for j = 1:numel(variants)
+                    topic = variants{j};
+                    h = sprintf('%s%s_s read_%s(void);\n', h, base, topic);
+                    h = sprintf('%svoid write_%s(%s_s in);\n', h, topic, base);
+                    h = sprintf('%s%s_s init_%s(bool initialize_to_nan);\n', h, base, topic);
+                end
             end
             h = sprintf('%suint64_t read_px4_system_time(void);\n\n', h);
             h = sprintf('%s// --- PARAM PROTOTYPES START ---\n', h);
@@ -845,15 +859,18 @@ classdef px4API < handle
             % --- BUILD C SOURCE (Desktop stubs only) ---
             % Note: NO #if guards here. Simulink's parser gets confused by them.
             % This file is excluded from PX4 builds anyway via copyGeneratedCodeFiles.
-            s = sprintf('#include "%s"\n#include <math.h>\n\n', obj.StubHeaderName);
+            s = sprintf('#include "%s"\n#include <math.h>\n#include <string.h>\n\n', obj.StubHeaderName);
             s = sprintf('%suint64_t read_px4_system_time(void) { return 0; }\n\n', s);
             
-            for i = 1:length(msgFiles)
-                [~, camelName, ~] = fileparts(msgFiles(i).name);
-                topicName = obj.camelCaseToSnakeCase(camelName);
-                s = sprintf('%s%s_s read_%s(void) { %s_s empty = {0}; return empty; }\n', s, topicName, topicName, topicName);
-                s = sprintf('%svoid write_%s(%s_s in) { (void)in; }\n', s, topicName, topicName);
-                s = sprintf('%s%s_s init_%s(bool initialize_to_nan) { %s_s empty = {0}; return empty; }\n\n', s, topicName, topicName, topicName);
+            for i = 1:numel(baseTopics)
+                base = baseTopics{i};
+                variants = unique([{base}, obj.getTopicVariants(base)], 'stable');
+                for j = 1:numel(variants)
+                    topic = variants{j};
+                    s = sprintf('%s%s_s read_%s(void) { %s_s empty = {0}; return empty; }\n', s, base, topic, base);
+                    s = sprintf('%svoid write_%s(%s_s in) { (void)in; }\n', s, topic, base);
+                    s = [s px4io.deployment.initializer(base, topic, obj.getFieldMetadataFromCache(base))];
+                end
             end
             s = sprintf('%s// --- PARAM IMPLEMENTATIONS START ---\n', s);
             s = sprintf('%s// --- PARAM IMPLEMENTATIONS END ---\n', s);
@@ -913,10 +930,10 @@ classdef px4API < handle
         end
 
         function typeSize = getPx4FieldTypeSize(~, px4Type)
-            % GETPX4FIELDTYPESIZE - Returns byte size for struct padding/sorting.
-            %
-            % Used to reorder struct fields by size (descending) to match 
-            % native PX4 uORB memory alignment and prevent padding mismatches.
+            % GETPX4FIELDTYPESIZE - Return the scalar field-size sorting key.
+            % Built-in fields sort by decreasing size; nested types return zero.
+            % This does not compute a complete structure size or insert padding.
+            % PX4 builds use native uORB headers for the actual target layout.
             
             switch lower(px4Type)
                 case {'uint64','int64','float64'}, typeSize = 8;
@@ -1102,55 +1119,62 @@ classdef px4API < handle
         function exportGeneratedCode(obj, buildInfo)
             % EXPORTGENERATEDCODE - Post-code generation Simulink callback hook.
             %
-            % Purges the target PX4 directory, generates the model-agnostic wrapper 
+            % Stages a complete deployment, generates the model-agnostic wrapper
             % and the hardware-specific C++ glue code, and copies all necessary 
             % artifacts into the PX4 firmware tree.
             
-            fprintf('\n--- [px4API] Starting Automated Clean & Export ---\n');
+            fprintf('\n--- [px4API] Preparing generated deployment ---\n');
             if isempty(obj.AllowedExtensions)
                 return; 
             end
             if ~exist(obj.PX4Root, 'dir')
                 error('[px4API:Error] Missing PX4 Root'); 
             end
-            if exist(obj.ResolvedExternalDir, 'dir')
-                rmdir(obj.ResolvedExternalDir, 's'); 
-            end
-            mkdir(obj.ResolvedExternalDir);
+            obj.ResolvedExternalDir = fullfile(obj.resolveAbsolutePath(obj.PX4Root), 'src', 'modules', obj.PX4ModuleName, 'generated_code');
+            parent = fileparts(obj.ResolvedExternalDir);
+            if ~isfolder(parent), error('px4io:MissingModule', 'Module directory does not exist: %s', parent); end
+            stage = tempname(parent); mkdir(stage);
+            cleanup = onCleanup(@() px4io.deployment.cleanupDirectory(stage));
             if ~exist(obj.LocalGeneratedDir, 'dir')
                 obj.generateAllBussesAndHeaders(); 
             end
 
             modelName = buildInfo.getBuildName;
-            % Reconcile once from the model before any generated code consumes the
-            % header. This also removes bindings for deleted or renamed blocks.
+            % Reconcile bindings from the model for the generated PX4 bridge.
+            % The parameter API signatures stay fixed; only the binding table
+            % changes when blocks are added, deleted, or renamed.
             obj.syncParamBindings(modelName);
-            obj.generateModelWrapper(modelName, obj.LocalGeneratedDir);
-            obj.generateOmnipotentCppGlue(obj.LocalGeneratedDir, buildInfo);
+            obj.generateModelWrapper(modelName, stage);
+            obj.generateOmnipotentCppGlue(stage, buildInfo);
             
-            count = obj.copyGeneratedCodeFiles(obj.LocalGeneratedDir, obj.ResolvedExternalDir, false);
+            sources = px4io.deployment.sourceFiles(buildInfo);
+            includes = buildInfo.getFullFileList('include');
             buildDirInfo = RTW.getBuildDir(modelName);
-            count = count + obj.copyGeneratedCodeFiles(buildDirInfo.BuildDirectory, obj.ResolvedExternalDir, false);
-            
-            startDirValue = buildInfo.Settings.LocalAnchorDir;
-            for i = 1:length(buildInfo.ModelRefs)
-                resolvedSubModelPath = strrep(buildInfo.ModelRefs(i).Path, '$(START_DIR)', startDirValue);
-                count = count + obj.copyGeneratedCodeFiles(resolvedSubModelPath, obj.ResolvedExternalDir, false);
+            headers = dir(fullfile(buildDirInfo.BuildDirectory, '*.h'));
+            headerFiles = arrayfun(@(f) fullfile(f.folder, f.name), headers, 'UniformOutput', false);
+            files = unique([sources(:); includes(:); headerFiles(:)], 'stable');
+            count = 0;
+            for i = 1:numel(files)
+                [~, name, ext] = fileparts(files{i});
+                if strcmp([name ext], obj.StubHeaderName), continue; end
+                if ismember(lower(ext), obj.AllowedExtensions)
+                    if ~isfile(files{i}), error('px4io:MissingFile', 'Missing build file: %s', files{i}); end
+                    px4io.deployment.copyFile(files{i}, fullfile(stage, [name ext]));
+                    count = count + 1;
+                end
             end
-            
-            sharedUtilsDir = fullfile(startDirValue, buildDirInfo.SharedUtilsTgtDir);
-            if exist(sharedUtilsDir, 'dir')
-                count = count + obj.copyGeneratedCodeFiles(sharedUtilsDir, obj.ResolvedExternalDir, false);
-            end
-            
+            copyfile(fullfile(obj.LocalGeneratedDir, obj.StubHeaderName), fullfile(stage, obj.StubHeaderName));
+            px4io.deployment.replaceDirectory(stage, obj.ResolvedExternalDir);
+
             fprintf('Successfully moved %d generated files over to PX4 code tree.\n', count);
         end
 
         function count = copyGeneratedCodeFiles(obj, sourceDir, destDir, recursive)
             % COPYGENERATEDCODEFILES - Recursively copies filtered files to the PX4 tree.
             %
-            % Crucially skips `px4_simulink_api.c` (desktop stubs) to prevent 
-            % multiple definition linker errors on the PX4 hardware target.
+            % This general copy helper excludes desktop stubs. The deployment
+            % path uses BuildInfo and deployment.copyFile instead, which also
+            % validate source selection and detect conflicting filenames.
             
             if nargin < 4
                 recursive = false; 
@@ -1195,51 +1219,30 @@ classdef px4API < handle
         function generateOmnipotentCppGlue(obj, outputDir, buildInfo)
             % GENERATEOMNIPOTENTCPPGLUE - Generates the PX4 hardware uORB/Param router.
             %
-            % Scans the generated Simulink C code to identify exactly which uORB topics 
-            % and parameters are used. Generates a highly optimized C++ glue file that:
-            %   1. Uses native uORB::Publication/Subscription for zero-overhead routing.
-            %   2. Uses cached param_t handles and uORB boolean flags for parameters, 
-            %      ensuring NO mutex locks occur inside the 200Hz control loop.
-            %   3. Uses PX4_ISFINITE and fabsf to satisfy -Werror=float-equal.
+            % Scan BuildInfo sources for message and clock calls, then filter
+            % the discovered names against cached PX4 topics. Parameter bindings
+            % come from the model manifest, not from the source scan.
+            % Emit native uORB subscriptions/publications, message initializers,
+            % parameter caches, and bridge initialization/termination functions.
+            % Source scanning is lexical and does not evaluate C preprocessor paths.
             
             if nargin < 2 || isempty(outputDir)
                 outputDir = obj.ResolvedExternalDir; 
             end
             
-            buildDirs = buildInfo.getBuildDirList; 
-            buildName = buildInfo.getBuildName;
-            testCppPath = fullfile(buildDirs{1}, sprintf('%s.c', buildName));
-            
-            readTopics = {}; 
-            writeTopics = {}; 
-            hasSystemTime = false;
-            
-            if isfile(testCppPath)
-                testContent = fileread(testCppPath);
-                % Regex excludes parameter functions to prevent treating them as uORB topics
-                readMatches = regexp(testContent, 'read_(?!px4_param_)(?!param_)(\w+)\s*\(', 'tokens');
-                writeMatches = regexp(testContent, 'write_(?!px4_param_)(?!param_)(\w+)\s*\(', 'tokens');
-                if ~isempty(readMatches)
-                    readTopics = unique([readMatches{:}]); 
-                end
-                if ~isempty(writeMatches)
-                    writeTopics = unique([writeMatches{:}]); 
-                end
-                readTopics = readTopics(~strcmp(readTopics, 'px4_system_time'));
-                writeTopics = writeTopics(~strcmp(writeTopics, 'px4_system_time'));
-                if contains(testContent, 'read_px4_system_time')
-                    hasSystemTime = true; 
-                end
-            else
-                orbTopics = fieldnames(obj.OrbCache.topics)';
-                readTopics = orbTopics; 
-                writeTopics = orbTopics; 
-                hasSystemTime = true;
+            files = px4io.deployment.sourceFiles(buildInfo);
+            [readTopics, writeTopics, initTopics, hasSystemTime] = px4io.deployment.discoverCalls(files);
+            knownTopics = fieldnames(obj.OrbCache.topics)';
+            bases = knownTopics;
+            for i = 1:numel(bases)
+                knownTopics = [knownTopics obj.getTopicVariants(bases{i})];
             end
+            readTopics = intersect(readTopics, knownTopics);
+            writeTopics = intersect(writeTopics, knownTopics);
+            initTopics = intersect(initTopics, knownTopics);
 
-            % The manifest preserves the physical PX4 name independently of the
-            % C symbol. Parsing symbols from the header used to turn FOO_float into
-            % a lookup for the nonexistent PX4 parameter FOO_FLOAT.
+            % Use the physical PX4 names and types recorded by parameter blocks;
+            % generated C function names do not identify individual parameters.
             paramBindings = obj.loadParamBindings();
 
             % Build C++ Source String
@@ -1252,7 +1255,7 @@ classdef px4API < handle
                 cppStr = sprintf('%s#include <drivers/drv_hrt.h>\n', cppStr); 
             end
 
-            allTopics = unique([readTopics, writeTopics]);
+            allTopics = unique([readTopics, writeTopics, initTopics]);
             for i = 1:length(allTopics)
                 cppStr = sprintf('%s#include <uORB/topics/%s.h>\n', cppStr, obj.getBaseTopicForVariant(allTopics{i}));
             end
@@ -1262,12 +1265,13 @@ classdef px4API < handle
             for i = 1:length(writeTopics)
                 t = writeTopics{i}; 
                 b = obj.getBaseTopicForVariant(t);
-                cppStr = sprintf('%s\tuORB::Publication<%s_s> _%s_pub{ORB_ID(%s)};\n', cppStr, b, t, t);
+                cppStr = sprintf('%s\tuORB::Publication<%s_s> _%s_pub{ORB_ID(%s)};\n', cppStr, b, t, obj.resolveOrbTopic(t));
             end
             for i = 1:length(readTopics)
                 t = readTopics{i}; 
                 b = obj.getBaseTopicForVariant(t);
-                cppStr = sprintf('%s\tuORB::Subscription _%s_sub{ORB_ID(%s)};\n', cppStr, t, t);
+                cppStr = sprintf('%s\tuORB::Subscription _%s_sub{ORB_ID(%s)};\n', cppStr, t, obj.resolveOrbTopic(t));
+                cppStr = sprintf('%s\t%s_s _%s_buffer{};\n', cppStr, b, t);
             end
             cppStr = sprintf('%s};\n\nstatic SimulinkGlue g_glue_instance;\nstatic bool g_initialized = false;\n\n', cppStr);
             cppStr = sprintf('%sextern "C" {\n\n', cppStr);
@@ -1280,59 +1284,19 @@ classdef px4API < handle
             for i = 1:length(readTopics)
                 t = readTopics{i}; 
                 b = obj.getBaseTopicForVariant(t);
-                cppStr = sprintf('%s%s_s read_%s(void) {\n\tstatic %s_s local_buffer{};\n', cppStr, b, t, b);
-                cppStr = sprintf('%s\tif (g_initialized && g_glue_instance._%s_sub.updated()) g_glue_instance._%s_sub.copy(&local_buffer);\n', cppStr, t, t);
-                cppStr = sprintf('%s\treturn local_buffer;\n}\n\n', cppStr);
+                cppStr = sprintf('%s%s_s read_%s(void) {\n', cppStr, b, t);
+                cppStr = sprintf('%s\tif (g_initialized && g_glue_instance._%s_sub.updated()) g_glue_instance._%s_sub.copy(&g_glue_instance._%s_buffer);\n', cppStr, t, t, t);
+                cppStr = sprintf('%s\treturn g_glue_instance._%s_buffer;\n}\n\n', cppStr, t);
             end
-            for i = 1:length(allTopics)
-                t = allTopics{i}; 
-                b = obj.getBaseTopicForVariant(t);
-                if ~strcmp(t, b) && ~any(strcmp(readTopics, b))
-                    cppStr = sprintf('%s%s_s read_%s(void) { return read_%s(); }\n\n', cppStr, b, b, t);
-                end
-            end
-
             for i = 1:length(writeTopics)
                 t = writeTopics{i}; 
                 b = obj.getBaseTopicForVariant(t);
                 cppStr = sprintf('%svoid write_%s(%s_s in) {\n\tif (g_initialized) g_glue_instance._%s_pub.publish(in);\n}\n\n', cppStr, t, b, t);
             end
-            for i = 1:length(allTopics)
-                t = allTopics{i}; 
-                b = obj.getBaseTopicForVariant(t);
-                if ~strcmp(t, b) && ~any(strcmp(writeTopics, b))
-                    cppStr = sprintf('%svoid write_%s(%s_s in) { write_%s(in); }\n\n', cppStr, b, b, t);
-                end
-            end
-
-            for i = 1:length(allTopics)
-                b = allTopics{i}; 
-                variants = obj.getTopicVariants(b);
-                for v = 1:length(variants)
-                    vName = variants{v};
-                    cppStr = sprintf('%s%s_s init_%s(bool initialize_to_nan) {\n\tstruct %s_s msg;\n\tmemset(&msg, 0, sizeof(msg));\n', cppStr, b, vName, b);
-                    cppStr = sprintf('%s\tif (initialize_to_nan) {\n', cppStr);
-                    fieldMeta = obj.getFieldMetadataFromCache(b);
-                    if ~isempty(fieldMeta) && height(fieldMeta) > 0
-                        for fIdx = 1:height(fieldMeta)
-                            if strcmp(fieldMeta.fieldType{fIdx}, 'float32') || strcmp(fieldMeta.fieldType{fIdx}, 'float64')
-                                fName = fieldMeta.fieldName{fIdx}; 
-                                aSize = fieldMeta.arraySize(fIdx);
-                                if aSize > 1
-                                    for idx = 0:(aSize-1)
-                                        cppStr = sprintf('%s\t\tmsg.%s[%d] = NAN;\n', cppStr, fName, idx); 
-                                    end
-                                else
-                                    cppStr = sprintf('%s\t\tmsg.%s = NAN;\n', cppStr, fName);
-                                end
-                            end
-                        end
-                    end
-                    cppStr = sprintf('%s\t}\n\treturn msg;\n}\n\n', cppStr);
-                end
-                if ~any(strcmp(variants, b))
-                    cppStr = sprintf('%s%s_s init_%s(bool initialize_to_nan) { return init_%s(initialize_to_nan); }\n\n', cppStr, b, b, variants{1});
-                end
+            for i = 1:numel(initTopics)
+                topic = initTopics{i};
+                base = obj.getBaseTopicForVariant(topic);
+                cppStr = [cppStr px4io.deployment.initializer(base, topic, obj.getFieldMetadataFromCache(base))];
             end
 
             % Stable generic parameter bridge. The model supplies a padded name,
@@ -1355,7 +1319,7 @@ classdef px4API < handle
                 cppStr = sprintf('%s    }\n    return -1;\n}\n\n', cppStr);
                 cppStr = sprintf('%sstatic void init_simulink_params() {\n', cppStr);
                 cppStr = sprintf('%s    for (size_t i = 0; i < g_simulink_param_count; ++i) {\n', cppStr);
-                cppStr = sprintf('%s        g_simulink_params[i].handle = param_find(g_simulink_params[i].name);\n', cppStr);
+                cppStr = sprintf('%s        g_simulink_params[i].value = {};\n        g_simulink_params[i].handle = param_find(g_simulink_params[i].name);\n', cppStr);
                 cppStr = sprintf('%s        if (g_simulink_params[i].handle != PARAM_INVALID && param_type(g_simulink_params[i].handle) == g_simulink_params[i].type) {\n', cppStr);
                 cppStr = sprintf('%s            if (g_simulink_params[i].type == PARAM_TYPE_FLOAT) (void)param_get(g_simulink_params[i].handle, &g_simulink_params[i].value.f);\n', cppStr);
                 cppStr = sprintf('%s            else (void)param_get(g_simulink_params[i].handle, &g_simulink_params[i].value.i);\n', cppStr);
@@ -1376,8 +1340,19 @@ classdef px4API < handle
             cppStr = sprintf('%s    update_simulink_params_impl();\n', cppStr);
             cppStr = sprintf('%s}\n\n', cppStr);
 
-            cppStr = sprintf('%svoid init_px4_simulink_io(void) {\n\tg_initialized = true;\n', cppStr);
+            cppStr = sprintf('%svoid init_px4_simulink_io(void) {\n', cppStr);
+            for i = 1:numel(readTopics)
+                cppStr = sprintf('%s\tg_glue_instance._%s_buffer = {};\n', cppStr, readTopics{i});
+            end
+            cppStr = sprintf('%s\tg_initialized = true;\n', cppStr);
             cppStr = sprintf('%s\tinit_simulink_params();\n', cppStr);
+            cppStr = sprintf('%s}\n\nvoid terminate_px4_simulink_io(void) {\n\tg_initialized = false;\n', cppStr);
+            for i = 1:numel(readTopics)
+                cppStr = sprintf('%s\tg_glue_instance._%s_sub.unsubscribe();\n', cppStr, readTopics{i});
+            end
+            if ~isempty(paramBindings)
+                cppStr = sprintf('%s\tg_param_update_sub.unsubscribe();\n', cppStr);
+            end
             cppStr = sprintf('%s}\n\n}\n', cppStr);
 
             if ~exist(outputDir, 'dir')
@@ -1395,8 +1370,9 @@ classdef px4API < handle
     methods (Static)
         function api = getInstance()
             % GETINSTANCE - Reuse the initialized API during mask callbacks.
-            % Bus objects are workspace-scoped, so restore them when a model reopen
-            % or `clear` removed them while this persistent handle remained alive.
+            % Restore missing workspace buses while keeping the persistent cache.
+            % Reuse does not recheck file timestamps; forceGenerateAll explicitly
+            % refreshes messages after PX4 interface changes in the same session.
             persistent sharedApi
             if isempty(sharedApi) || ~isvalid(sharedApi)
                 sharedApi = px4io.px4API();
@@ -1406,7 +1382,9 @@ classdef px4API < handle
         end
 
         function forceGenerateAll()
-            px4api = px4io.getInstance();
+            % FORCEGENERATEALL Reparse messages and replace API/bus/enum artifacts.
+            % Use before model compilation after changing PX4 message definitions.
+            px4api = px4io.px4API.getInstance();
             px4api.generateAllBussesAndHeaders();
         end   
 
@@ -1625,7 +1603,9 @@ classdef px4API < handle
         end
 
         function runPostCodeGen(buildInfo)
-            % RUNPOSTCODEGEN - Simulink post-code generation callback hook.
+            % RUNPOSTCODEGEN - Export a completed Simulink build to PX4.
+            % Does not change model settings, rerun code generation, or build PX4.
+            % Message buses must already match the target before model compilation.
             apiInstance = px4io.px4API.getInstance();
             apiInstance.exportGeneratedCode(buildInfo);
         end
@@ -1638,49 +1618,9 @@ classdef px4API < handle
         end
 
         function generateModelWrapper(modelName, outputDir)
-            % GENERATEMODELWRAPPER - Generates the model-agnostic C++ wrapper header.
-            %
-            % Decouples the hand-written PX4 module from the specific Simulink model name,
-            % allowing the model to be renamed without breaking the PX4 C++ code.
-            if isempty(modelName)
-                error('modelName empty'); 
-            end
-            isLoaded = bdIsLoaded(modelName); 
-            if ~isLoaded
-                load_system(modelName); 
-            end
-            hasInputs = ~isempty(find_system(modelName, 'SearchDepth', 1, 'BlockType', 'Inport'));
-            hasOutputs = ~isempty(find_system(modelName, 'SearchDepth', 1, 'BlockType', 'Outport'));
-            if ~isLoaded
-                close_system(modelName, 0); 
-            end
-
-            w = sprintf('// Auto-generated model-agnostic wrapper\n#pragma once\n\n');
-            w = sprintf('%s#ifdef __cplusplus\nextern "C" {\n#endif\n', w);
-            w = sprintf('%svoid init_px4_simulink_io(void);\nvoid update_simulink_params(void);\n', w);
-            w = sprintf('%svoid %s_initialize(void);\nvoid %s_step(void);\n', w, modelName, modelName);
-            w = sprintf('%s#ifdef __cplusplus\n}\n#endif\n\n#include "%s.h"\n\n', w, modelName);
-            w = sprintf('%snamespace SimulinkWrapper {\nclass SimulinkModel {\npublic:\n', w);
-            w = sprintf('%s    void initialize() { init_px4_simulink_io(); %s_initialize(); }\n', w, modelName);
-            w = sprintf('%s    void step() { %s_step(); }\n', w, modelName);
-            if hasInputs
-                w = sprintf('%s    ExtU_%s_T& getExternalInputs() { return %s_U; }\n', w, modelName, modelName);
-            else
-                w = sprintf('%s    void* getExternalInputs() { return nullptr; }\n', w); 
-            end
-            if hasOutputs
-                w = sprintf('%s    const ExtY_%s_T& getExternalOutputs() { return %s_Y; }\n', w, modelName, modelName);
-            else
-                w = sprintf('%s    void* getExternalOutputs() { return nullptr; }\n', w); 
-            end
-            w = sprintf('%s};\n}  // namespace SimulinkWrapper\n', w);
-
-            if ~exist(outputDir, 'dir')
-                mkdir(outputDir); 
-            end
-            fid = fopen(fullfile(outputDir, 'simulink_model_wrapper.h'), 'w');
-            fprintf(fid, '%s', w); 
-            fclose(fid);
+            % GENERATEMODELWRAPPER Delegate compiled-interface validation and emission.
+            % Timing and entry-point names come from codeInfo.mat, not model-name guesses.
+            px4io.deployment.writeWrapper(modelName, outputDir);
         end
 
         function listStr = getBaseTopicsDropdownString()

@@ -43,12 +43,12 @@
 #include <uORB/topics/debug_array.h>
 #include <uORB/topics/trajectory_setpoint.h>
 #include <uORB/topics/vehicle_local_position.h>
-#include <uORB/topics/vehicle_angular_velocity.h>
+
 #include <px4_platform_common/module_params.h>
 #include "file_loader_backend.hpp"
 
 
-#define DATATYPE_TRAJ float //shortcut for testing double vs float
+
 
 using matrix::Dcmf;
 using matrix::Quatf;
@@ -83,20 +83,6 @@ public:
 
 using pointf = point<float>;
 
-class trajectory_type
-{
-public:
-	size_t n_coefs;
-	size_t n_dofs;
-	size_t n_int;
-
-	trajectory_type(size_t _n_coefs, size_t _n_dofs, size_t _n_int);
-	~trajectory_type();
-};
-
-
-
-
 class trajectory
 {
 private:
@@ -117,27 +103,45 @@ private:
 	void start(void);
 	void reset(void);
 	int load(void);
-	int load_dummy_data(void);
+
 	int execute(void);
 	int update_from_companion(void);
 	int update_companion(bool request_start = false, bool request_stop = false, bool request_start_executing = false);
 	int set_home();
 
 	int update_vehicle_state(void);
+	void publish_status();
+	void fail(const char *reason);
+	bool _home_valid{false};
+	bool _local_loaded{false};
+	int32_t _input_type{0};
+	int32_t _output_mask{1};
+	bool _use_companion{false};
+	hrt_abstime _companion_timestamp{0};
+	bool _reset_counters_valid{false};
+	uint8_t _xy_reset{0}, _z_reset{0}, _heading_reset{0};
+	static constexpr hrt_abstime input_timeout_us = 500000;
+	static constexpr hrt_abstime companion_timeout_us = 1000000;
+
+	struct LoadedTrajectory {
+		size_t n_coeffs{0}, n_int{0}, n_dofs{0};
+		decltype(coefs) coefficients{};
+		decltype(tof_int) durations{};
+	};
+	int read_trajectory(file_loader_backend &loader, LoadedTrajectory &data);
 	int publish_trajectory_setpoint(float time_trajectory_s);
 
 	sim_guidance_status_s status{};
 	debug_array_s sm_inbound{};
 	vehicle_local_position_s vehicle_local_position{};
-	//debug_array_s _companion_guidance_inbound{};
 
-	vehicle_angular_velocity_s     vehicle_angular_velocity{};
+
+
 
 
 	// Publications
 	uORB::Publication<sim_guidance_trajectory_s>	_sim_guidance_trajecotry_pub{ORB_ID(sim_guidance_trajectory)};
 	uORB::Publication<sim_guidance_status_s>	_sim_guidance_status_pub{ORB_ID(sim_guidance_status)};
-	uORB::Publication<sim_guidance_request_s>	_sim_guidance_request_pub{ORB_ID(sim_guidance_request)};
 	uORB::Publication<debug_array_s>		_sim_guidance_pub{ORB_ID(simulink_guidance)};
 	uORB::Publication<debug_array_s>		_companion_guidance_inbound_pub{ORB_ID(companion_guidance_inbound)};
 	uORB::Publication<trajectory_setpoint_s>	_trajectory_setpoint_pub{ORB_ID(trajectory_setpoint)};
@@ -148,8 +152,6 @@ private:
 	uORB::Subscription				_sim_inbound_sub{ORB_ID(simulink_inbound)};
 	uORB::Subscription				_vehicle_local_position_sub{ORB_ID(vehicle_local_position)};
 	uORB::Subscription				_companion_guidance_outbound_sub{ORB_ID(companion_guidance_outbound)};
-	uORB::Subscription				_companion_guidance_inbound_sub{ORB_ID(companion_guidance_inbound)};
-	uORB::Subscription 				_vehicle_angular_velocity_sub{ORB_ID(vehicle_angular_velocity)};
 
 public:
 	trajectory(/* args */);
@@ -160,6 +162,8 @@ public:
 	int set_src(const char* _dir, const char* _file);
 
 	void print_status(void);
+	void disable();
+	void configure(int32_t input_type, int32_t output_mask);
 	void update(bool use_companion = false); //main update loop
 };
 

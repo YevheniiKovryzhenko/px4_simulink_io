@@ -48,3 +48,6 @@ px4_add_module(
 		#trajectory_solver
 	)
 
+
+px4_add_functional_gtest(SRC tests/TrajectoryTest.cpp LINKLIBS modules__simulink_guidance)
+px4_add_functional_gtest(SRC tests/TrajectoryMathTest.cpp LINKLIBS modules__simulink_guidance)

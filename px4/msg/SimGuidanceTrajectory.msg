@@ -3,7 +3,7 @@
 uint64 timestamp		# time since system start (microseconds)
 
 float32 time_s
-uint8 n_dofs #n_dofs < 4, stands for valid entries in vectors below:
+uint8 n_dofs #n_dofs <= 4, stands for valid entries in vectors below:
 
 #order: [x y z yaw]
 float32[4] position

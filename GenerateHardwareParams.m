@@ -36,7 +36,7 @@ clc;
 generate_params_json(Parameters)
 
 function generate_params_json(Parameters)
-    api = px4io.px4API();    
+    api = px4io.px4API.getInstance();
     export_destination_path = fullfile(api.PX4Root, 'src', 'modules', api.PX4ModuleName,'module.yaml');
 
     % Initialize the root module configuration builder node

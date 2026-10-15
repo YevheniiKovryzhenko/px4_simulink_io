@@ -44,7 +44,9 @@
 %
 % Usage:
 %   api = px4io.px4API.getInstance();  % Initialize or reuse the editor-time API.
+%   px4io.px4API.forceGenerateAll();  % Refresh generated messages, buses, enums.
 %   px4io.px4API.runPostCodeGen(buildInfo);  % Model PostCodeGenCommand callback.
+% Mask integration methods are hidden; generation helpers are private.
 % Model settings are managed separately by px4io.deployment.configureModel.
 
 classdef px4API < handle
@@ -54,16 +56,16 @@ classdef px4API < handle
         PX4Root = fullfile('~', 'PX4', 'v1.17.0-mod')
 
         % Name of target PX4 module (directory in src/modules/)
-        PX4ModuleName = 'simulink_io'
-
-        % Supported file extensions for export to PX4 tree
-        AllowedExtensions = {'.c', '.cpp', '.h'}        
+        PX4ModuleName = 'simulink_io'        
 
         % Enable/disable debug console output
         ShowDebug = false
     end
 
     properties (Access = private)
+        % Supported file extensions for export to PX4 tree
+        AllowedExtensions = {'.c', '.cpp', '.h'}
+
         PackageRoot = ''            % Absolute path to MATLAB +px4io package directory
         ResolvedExternalDir = ''    % Target PX4 generated code directory
         LocalGeneratedDir = ''      % Local MATLAB generated artifacts directory
@@ -79,7 +81,7 @@ classdef px4API < handle
         ParamBindingsFile = 'param_bindings.json' % Per-model authoritative parameter manifest
     end
     
-    methods
+    methods (Access = private)
         function obj = px4API()
             % PX4API - Constructor and initialization engine.
             %
@@ -180,30 +182,6 @@ classdef px4API < handle
             if ~existsInBase
                 obj.regenerateBusesInWorkspace();
             end
-        end
-        
-        function registerParamBinding(obj, blockHandle, direction)
-            % REGISTERPARAMBINDING - Cheap editor-time registration for one block.
-            %
-            % This records one block without scanning the complete model.
-            % Deleted/renamed blocks are pruned by syncParamBindings at build time.
-            if nargin < 3 || isempty(direction)
-                direction = '';
-            end
-
-            binding = obj.getParamBindingFromBlock(blockHandle, direction);
-            if isempty(binding)
-                return;
-            end
-
-            bindings = obj.loadParamBindings();
-            % A mask edit can change the parameter name or type. Remove this
-            % block's previous editor-time registration before merging its new
-            % configuration; registrations belonging to other blocks remain.
-            bindings = obj.removeBlockFromParamBindings(bindings, obj.blockToPath(blockHandle));
-            bindings = obj.mergeParamBinding(bindings, binding);
-            obj.saveParamBindings(bindings);
-            obj.writeParamArtifacts();
         end
 
         function syncParamBindings(obj, modelName)
@@ -453,19 +431,6 @@ classdef px4API < handle
             end
         end
 
-        function setParamNameConstant(~, constantPath, paramName)
-            % SETPARAMNAMECONSTANT - Mirror a mask name into hidden uint8[17] data.
-            px4Name = upper(strtrim(char(string(paramName))));
-            bytes = uint8(px4Name);
-            if numel(bytes) > 16
-                error('[px4API:ParameterNameTooLong] PX4 parameter "%s" exceeds the 16-character limit.', px4Name);
-            end
-            data = zeros(1, 17, 'uint8');
-            data(1:numel(bytes)) = bytes;
-            set_param(constantPath, 'Value', mat2str(double(data)));
-            set_param(constantPath, 'OutDataTypeStr', 'uint8');
-        end
-
         function path = blockToPath(~, block)
             try
                 path = getfullname(block);
@@ -614,79 +579,6 @@ classdef px4API < handle
             variants = obj.getTopicVariants(base);
             topic = name;
             if ~any(strcmp(variants, name)), topic = variants{1}; end
-        end
-
-        function variants = getTopicVariants(obj, topicName)
-            % GETTOPICVARIANTS - Resolves uORB topic variants from the cache.
-            %
-            % Normalize cached char/string/cell representations into a row cell
-            % array so consumers can concatenate topic names consistently.
-            %
-            % Inputs:
-            %   topicName - Base or variant topic name
-            %
-            % Outputs:
-            %   variants - Cell array of strings representing all valid ORB_IDs
-            
-            variants = {topicName}; % Default fallback
-            if ~isfield(obj.OrbCache, 'topics')
-                return; 
-            end
-
-            if isfield(obj.OrbCache.topics, topicName)
-                entry = obj.OrbCache.topics.(topicName);
-                if isfield(entry, 'variants') && ~isempty(entry.variants)
-                    variants = entry.variants;
-                end
-            else
-                topicKeys = fieldnames(obj.OrbCache.topics);
-                for i = 1:length(topicKeys)
-                    baseName = topicKeys{i};
-                    entry = obj.OrbCache.topics.(baseName);
-                    if isfield(entry, 'variants')
-                        v = entry.variants;
-                        if (ischar(v) && strcmp(v, topicName)) || (iscell(v) && any(strcmp(v, topicName)))
-                            variants = v; 
-                            break;
-                        end
-                    end
-                end
-            end
-            
-            % Enforce cell array output type
-            if ischar(variants) || isstring(variants)
-                variants = {variants};
-            elseif iscell(variants)
-                variants = variants(~cellfun(@isempty, variants));
-                if isempty(variants)
-                    variants = {topicName}; 
-                end
-            end
-            variants = reshape(variants, 1, []);
-        end
-
-        function baseTopic = getBaseTopicForVariant(obj, topicName)
-            % GETBASETOPICFORVARIANT - Maps a variant name back to its base message struct.
-            %
-            % For example, vehicle_attitude_groundtruth uses vehicle_attitude_s.
-            % Cached variants may be stored as char vectors or cell arrays.
-            
-            baseTopic = topicName;
-            if isfield(obj.OrbCache, 'topics')
-                if isfield(obj.OrbCache.topics, topicName)
-                    return; 
-                end
-                for key = fieldnames(obj.OrbCache.topics)'
-                    entry = obj.OrbCache.topics.(key{1});
-                    if isfield(entry, 'variants')
-                        v = entry.variants;
-                        if (ischar(v) && strcmp(v, topicName)) || (iscell(v) && any(strcmp(v, topicName)))
-                            baseTopic = key{1}; 
-                            return;
-                        end
-                    end
-                end
-            end
         end
 
         function saveOrbCache(obj)
@@ -1367,27 +1259,119 @@ classdef px4API < handle
         end
     end
 
-    methods (Static)
-        function api = getInstance()
-            % GETINSTANCE - Reuse the initialized API during mask callbacks.
-            % Restore missing workspace buses while keeping the persistent cache.
-            % Reuse does not recheck file timestamps; forceGenerateAll explicitly
-            % refreshes messages after PX4 interface changes in the same session.
-            persistent sharedApi
-            if isempty(sharedApi) || ~isvalid(sharedApi)
-                sharedApi = px4io.px4API();
+    methods (Hidden)
+        function registerParamBinding(obj, blockHandle, direction)
+            % REGISTERPARAMBINDING - Cheap editor-time registration for one block.
+            %
+            % This records one block without scanning the complete model.
+            % Deleted/renamed blocks are pruned by syncParamBindings at build time.
+            if nargin < 3 || isempty(direction)
+                direction = '';
             end
-            api = sharedApi;
-            api.ensureBusesInWorkspace();
+
+            binding = obj.getParamBindingFromBlock(blockHandle, direction);
+            if isempty(binding)
+                return;
+            end
+
+            bindings = obj.loadParamBindings();
+            % A mask edit can change the parameter name or type. Remove this
+            % block's previous editor-time registration before merging its new
+            % configuration; registrations belonging to other blocks remain.
+            bindings = obj.removeBlockFromParamBindings(bindings, obj.blockToPath(blockHandle));
+            bindings = obj.mergeParamBinding(bindings, binding);
+            obj.saveParamBindings(bindings);
+            obj.writeParamArtifacts();
         end
 
-        function forceGenerateAll()
-            % FORCEGENERATEALL Reparse messages and replace API/bus/enum artifacts.
-            % Use before model compilation after changing PX4 message definitions.
-            px4api = px4io.px4API.getInstance();
-            px4api.generateAllBussesAndHeaders();
-        end   
+        function setParamNameConstant(~, constantPath, paramName)
+            % SETPARAMNAMECONSTANT - Mirror a mask name into hidden uint8[17] data.
+            px4Name = upper(strtrim(char(string(paramName))));
+            bytes = uint8(px4Name);
+            if numel(bytes) > 16
+                error('[px4API:ParameterNameTooLong] PX4 parameter "%s" exceeds the 16-character limit.', px4Name);
+            end
+            data = zeros(1, 17, 'uint8');
+            data(1:numel(bytes)) = bytes;
+            set_param(constantPath, 'Value', mat2str(double(data)));
+            set_param(constantPath, 'OutDataTypeStr', 'uint8');
+        end
 
+        function variants = getTopicVariants(obj, topicName)
+            % GETTOPICVARIANTS - Resolves uORB topic variants from the cache.
+            %
+            % Normalize cached char/string/cell representations into a row cell
+            % array so consumers can concatenate topic names consistently.
+            %
+            % Inputs:
+            %   topicName - Base or variant topic name
+            %
+            % Outputs:
+            %   variants - Cell array of strings representing all valid ORB_IDs
+
+            variants = {topicName}; % Default fallback
+            if ~isfield(obj.OrbCache, 'topics')
+                return;
+            end
+
+            if isfield(obj.OrbCache.topics, topicName)
+                entry = obj.OrbCache.topics.(topicName);
+                if isfield(entry, 'variants') && ~isempty(entry.variants)
+                    variants = entry.variants;
+                end
+            else
+                topicKeys = fieldnames(obj.OrbCache.topics);
+                for i = 1:length(topicKeys)
+                    baseName = topicKeys{i};
+                    entry = obj.OrbCache.topics.(baseName);
+                    if isfield(entry, 'variants')
+                        v = entry.variants;
+                        if (ischar(v) && strcmp(v, topicName)) || (iscell(v) && any(strcmp(v, topicName)))
+                            variants = v;
+                            break;
+                        end
+                    end
+                end
+            end
+
+            % Enforce cell array output type
+            if ischar(variants) || isstring(variants)
+                variants = {variants};
+            elseif iscell(variants)
+                variants = variants(~cellfun(@isempty, variants));
+                if isempty(variants)
+                    variants = {topicName};
+                end
+            end
+            variants = reshape(variants, 1, []);
+        end
+
+        function baseTopic = getBaseTopicForVariant(obj, topicName)
+            % GETBASETOPICFORVARIANT - Maps a variant name back to its base message struct.
+            %
+            % For example, vehicle_attitude_groundtruth uses vehicle_attitude_s.
+            % Cached variants may be stored as char vectors or cell arrays.
+
+            baseTopic = topicName;
+            if isfield(obj.OrbCache, 'topics')
+                if isfield(obj.OrbCache.topics, topicName)
+                    return;
+                end
+                for key = fieldnames(obj.OrbCache.topics)'
+                    entry = obj.OrbCache.topics.(key{1});
+                    if isfield(entry, 'variants')
+                        v = entry.variants;
+                        if (ischar(v) && strcmp(v, topicName)) || (iscell(v) && any(strcmp(v, topicName)))
+                            baseTopic = key{1};
+                            return;
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    methods (Static, Access = private)
         function resolvedPath = resolveAbsolutePath(pathStr)
             % RESOLVEABSOLUTEPATH - Normalizes paths (handles ~, ./, and ../).
             resolvedPath = pathStr;
@@ -1505,38 +1489,6 @@ classdef px4API < handle
             orderedStructs{end, 2} = allStructs{idx, 2}; 
         end
 
-        function listStr = getTopicDropdownString()
-            % GETTOPICDROPDOWNSTRING - Generates comma-separated list of all uORB topics.
-            %
-            % Used by Simulink mask callbacks to populate dropdown menus.
-            api = px4io.px4API.getInstance();
-            if isfield(api.OrbCache, 'topics') && ~isempty(fieldnames(api.OrbCache.topics))
-                topics = {};
-                for key = fieldnames(api.OrbCache.topics)'
-                    entry = api.OrbCache.topics.(key{1});
-                    variants = entry.variants;
-                    if ischar(variants) || isstring(variants)
-                        variants = {char(variants)};
-                    end
-                    topics = [topics, variants]; %#ok<AGROW>
-                end
-                listStr = strjoin(unique(topics(~cellfun(@isempty, topics))), ',');
-                return;
-            end
-            files = dir(fullfile(api.PX4Root, 'msg', '**', '*.msg'));
-            topics = {};
-            for i = 1:length(files)
-                [~, camelName, ~] = fileparts(files(i).name);
-                topicName = px4io.px4API.camelCaseToSnakeCase(camelName);
-                if strcmp(topicName, 'message_version')
-                    continue; 
-                end
-                variants = px4io.px4API.extractMsgTopicVariants(fullfile(files(i).folder, files(i).name), topicName);
-                topics = [topics, variants];
-            end
-            listStr = strjoin(unique(topics(~cellfun(@isempty, topics))), ',');
-        end
-
         function busObj = createBusFromFieldData(fieldsData)
             % CREATEBUSFROMFIELDDATA - Constructs a Simulink.Bus object from parsed metadata.
             %
@@ -1602,25 +1554,44 @@ classdef px4API < handle
             busObj.HeaderFile = 'px4_simulink_api.h';
         end
 
-        function runPostCodeGen(buildInfo)
-            % RUNPOSTCODEGEN - Export a completed Simulink build to PX4.
-            % Does not change model settings, rerun code generation, or build PX4.
-            % Message buses must already match the target before model compilation.
-            apiInstance = px4io.px4API.getInstance();
-            apiInstance.exportGeneratedCode(buildInfo);
-        end
-
-        function uorb_topic_callback(callbackContext)
-            % UORB_TOPIC_CALLBACK - Mask callback to populate uORB topic dropdowns.
-            blockHandle = callbackContext.BlockHandle;
-            choices = strsplit(px4io.px4API.getTopicDropdownString(), ',');
-            set_param(blockHandle, 'TypeOptions_uorb_topic', choices);
-        end
-
         function generateModelWrapper(modelName, outputDir)
             % GENERATEMODELWRAPPER Delegate compiled-interface validation and emission.
-            % Timing and entry-point names come from codeInfo.mat, not model-name guesses.
+            % Timing and entry-point names come from generated interface metadata.
             px4io.deployment.writeWrapper(modelName, outputDir);
+        end
+    end
+
+    methods (Static, Hidden)
+        function listStr = getTopicDropdownString()
+            % GETTOPICDROPDOWNSTRING - Generates comma-separated list of all uORB topics.
+            %
+            % Used by Simulink mask callbacks to populate dropdown menus.
+            api = px4io.px4API.getInstance();
+            if isfield(api.OrbCache, 'topics') && ~isempty(fieldnames(api.OrbCache.topics))
+                topics = {};
+                for key = fieldnames(api.OrbCache.topics)'
+                    entry = api.OrbCache.topics.(key{1});
+                    variants = entry.variants;
+                    if ischar(variants) || isstring(variants)
+                        variants = {char(variants)};
+                    end
+                    topics = [topics, variants]; %#ok<AGROW>
+                end
+                listStr = strjoin(unique(topics(~cellfun(@isempty, topics))), ',');
+                return;
+            end
+            files = dir(fullfile(api.PX4Root, 'msg', '**', '*.msg'));
+            topics = {};
+            for i = 1:length(files)
+                [~, camelName, ~] = fileparts(files(i).name);
+                topicName = px4io.px4API.camelCaseToSnakeCase(camelName);
+                if strcmp(topicName, 'message_version')
+                    continue;
+                end
+                variants = px4io.px4API.extractMsgTopicVariants(fullfile(files(i).folder, files(i).name), topicName);
+                topics = [topics, variants];
+            end
+            listStr = strjoin(unique(topics(~cellfun(@isempty, topics))), ',');
         end
 
         function listStr = getBaseTopicsDropdownString()
@@ -1653,5 +1624,43 @@ classdef px4API < handle
             baseTopics = unique(baseTopics(~cellfun(@isempty, baseTopics)));
             listStr = strjoin(baseTopics, ',');
         end
+
+        function uorb_topic_callback(callbackContext)
+            % UORB_TOPIC_CALLBACK - Mask callback to populate uORB topic dropdowns.
+            blockHandle = callbackContext.BlockHandle;
+            choices = strsplit(px4io.px4API.getTopicDropdownString(), ',');
+            set_param(blockHandle, 'TypeOptions_uorb_topic', choices);
+        end
     end
+
+    methods (Static)
+        function api = getInstance()
+            % GETINSTANCE - Reuse the initialized API during mask callbacks.
+            % Restore missing workspace buses while keeping the persistent cache.
+            % Reuse does not recheck file timestamps; forceGenerateAll explicitly
+            % refreshes messages after PX4 interface changes in the same session.
+            persistent sharedApi
+            if isempty(sharedApi) || ~isvalid(sharedApi)
+                sharedApi = px4io.px4API();
+            end
+            api = sharedApi;
+            api.ensureBusesInWorkspace();
+        end
+
+        function forceGenerateAll()
+            % FORCEGENERATEALL Reparse messages and replace API/bus/enum artifacts.
+            % Use before model compilation after changing PX4 message definitions.
+            px4api = px4io.px4API.getInstance();
+            px4api.generateAllBussesAndHeaders();
+        end
+
+        function runPostCodeGen(buildInfo)
+            % RUNPOSTCODEGEN - Export a completed Simulink build to PX4.
+            % Does not change model settings, rerun code generation, or build PX4.
+            % Message buses must already match the target before model compilation.
+            apiInstance = px4io.px4API.getInstance();
+            apiInstance.exportGeneratedCode(buildInfo);
+        end
+    end
+
 end

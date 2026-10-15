@@ -50,42 +50,58 @@ For explicit API initialization, use:
 api = px4io.px4API.getInstance();
 ```
 
+The public entry points are `getInstance`, `forceGenerateAll`, and
+`runPostCodeGen`. Mask integration methods are hidden from normal method listings;
+generation helpers and the constructor are private. Use `getInstance` to obtain
+the API object and access its configuration properties.
+
 ## Configure and save a model once
 
-Configure these settings manually in Simulink, or use the optional helper:
+Run the helper on the top model after adding your PX4 blocks:
 
 ```matlab
-px4io.deployment.configureModel('Test');
+px4io.deployment.configureModel('px4TestBasic');
 ```
 
-| Setting | Required value |
+It initializes toolbox buses and headers, configures the model and its referenced
+models, and installs the top model's deployment callback. It does not generate
+model code, deploy files, compile PX4, or save models. Review and save every
+changed model before building.
+
+| Area | Configuration applied |
 | --- | --- |
-| Target language (`TargetLang`) | C |
-| Code interface (`CodeInterfacePackaging`) | Nonreusable function |
-| Solver type (`SolverType`) | Fixed-step |
-| Multitasking (`EnableMultiTasking`) | Off |
-| Internal startup memory initialization (`ZeroInternalMemoryAtStartup`) | On |
-| External startup memory initialization (`ZeroExternalMemoryAtStartup`) | On |
+| Code target | `ert.tlc`, C99, fixed-width C integer types, no code replacement library |
+| Hardware portability | ARM Cortex-M data model, 64-bit integers for timestamps, portable word sizes, matching production/test hardware |
+| Execution | Fixed-step, single task; top model uses nonreusable functions with combined output/update |
+| Build ownership | Generate code only; no makefile, example main, MAT-file logging, or allocation entry point |
+| Lifecycle and numerics | Initialize internal/external memory on each start, include termination, retain nonfinite-number support |
+| Memory | Disable MATLAB Function dynamic allocation; inline ordinary parameters; enable block reduction, expression folding, signal/buffer reuse, local block outputs, and memcpy |
+| Custom code | Add generated header/include paths for simulation and code generation; add desktop stubs only to simulation |
+| Export | Install `px4io.px4API.runPostCodeGen(buildInfo)` on the top model |
 
-The helper changes only model configuration. It does not generate code, export
-files, compile PX4, or save the model. It preserves the selected solver algorithm
-and base sample time. It enables the two startup initialization settings on
-referenced models as well; other helper settings apply to the top model.
+The helper preserves an existing fixed-step solver algorithm and sample period,
+explicit signal data types, explicit parameter storage classes, and unrelated
+custom code and callbacks. Simulink selects a compatible solver when converting
+from variable-step mode. Ordinary model parameters become inlined constants;
+explicit storage classes and the toolbox's PX4 parameter read/write blocks remain
+available for parameters that must change at runtime.
 
-Save the affected models in Simulink to retain these settings. Once saved, normal
-model edits and PX4 firmware updates do not require running the helper again.
-Use it again only for a new model or to restore settings that have changed.
-Manual configuration is equally supported.
+The same portable profile supports SITL and typical 32-bit ARM flight controllers.
+It does not select a PX4 board or enable a MathWorks hardware support package.
+Models requiring processor-specific libraries or other hardware sizes need their
+own reviewed hardware configuration. The helper does not force unspecified data
+types to `single` or change floating-point approximations to gain speed.
 
-Configure the model's **Post-code generation command** (`PostCodeGenCommand`) as:
+Custom-code entries and the export callback are added only when absent, so the
+helper can be reapplied. Referenced models receive the shared target, hardware,
+optimization, initialization, and custom-code settings; their function packaging
+and callbacks remain their own. Only the top model gets the PX4 entry-point
+interface and deployment callback.
 
-```matlab
-px4io.px4API.runPostCodeGen(buildInfo);
-```
-
-The settings helper does not install this callback or configure the model's
-custom-code paths. Keep the library/example model's custom-code integration and
-the callback configured, and save them with the model.
+Use the helper for a new model or to restore the deployment settings. The wrapper
+still validates the compiled interface and resolved timing: a model must produce
+one periodic step with zero offset and a whole-microsecond period. Custom source
+and library dependencies must also be available to the PX4 toolchain.
 
 ## Everyday workflow: Generate Code
 
@@ -103,8 +119,9 @@ its own toolchain.
 The callback automatically:
 
 1. Collects current parameter bindings from the root and referenced models.
-2. Reads `codeInfo.mat` to validate the compiled interface and generate the
-   adapter's entry points and resolved sample period.
+2. Reads generated interface metadata to validate the compiled interface and
+   generate the adapter's entry points and resolved sample period, using
+   `coder.getCodeDescriptor` with `codedescriptor.dmr`.
 3. Scans model, referenced-model, and shared-utility source files for uORB reads,
    writes, message initializers, and system-time calls.
 4. Generates the hardware glue required by those calls.
@@ -112,6 +129,21 @@ The callback automatically:
    programs, and checks for missing files or conflicting filenames.
 6. Replaces the deployed generated-code directory only after preparing a complete
    staging directory. A failed replacement attempts to restore the old directory.
+
+The metadata and wrapper callback are covered by
+`runtests('tests/testDeploymentMetadata.m')`, verified with fresh ERT builds in
+R2024a, R2025b, and R2026b. These checks generate code without compiling PX4.
+See [the test guide](tests/README.md) for its purpose, requirements, and how to
+interpret failures.
+The supplied `px4TestBasic` model was also generated and exported through its
+normal deployment callback in all three releases, using release-compatible
+model/library copies for the older releases. Its generated wrapper and PX4 glue
+were identical across the three releases.
+The expanded `configureModel` profile was checked with that model in all three
+releases and with a parent/child referenced-model build in R2026b. Its R2026b
+output compiled as the PX4 SITL `simulink_io` module, and its generated C/C++
+sources cross-compiled with the CubeOrange+ Cortex-M7 toolchain. These compiler
+checks do not include a complete flight-controller firmware link or runtime test.
 
 Export does not compile PX4, start a simulator, flash hardware, arm a vehicle, or
 change runtime PX4 parameters. Build and deployment errors must be resolved before
@@ -155,7 +187,7 @@ A termination function is optional. Separate output/update entry points, argumen
 based entry points, multiple independently scheduled step functions, and nonzero
 base-period offsets are not supported by this adapter.
 
-The generator obtains entry-point names and timing from `codeInfo.mat`. It uses
+The generator obtains entry-point names and timing through `coder.getCodeDescriptor`. It uses
 the resolved period even when the model's `FixedStep` setting is `auto`. Periods
 must be positive whole microseconds representable by a 32-bit unsigned integer.
 Slower rates may be scheduled within the generated combined step function.

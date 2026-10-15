@@ -92,7 +92,9 @@ classdef px4API < handle
             
             currentFilePath = mfilename('fullpath');
             [obj.PackageRoot, ~, ~] = fileparts(currentFilePath);
-            obj.PX4Root = obj.resolveAbsolutePath(obj.PX4Root);
+            % Default property values bypass setters; validate the configured
+            % root before inspecting or replacing any generated artifacts.
+            obj.PX4Root = obj.PX4Root;
             obj.ResolvedExternalDir = fullfile(obj.PX4Root, 'src', 'modules', obj.PX4ModuleName, 'generated_code');
 
             if obj.ShowDebug, fprintf('\n--- [px4API] Initializing ---\n'); end            
@@ -628,10 +630,8 @@ classdef px4API < handle
             % share this header; selecting a topic does not rewrite it. Hardware
             % glue is generated separately for calls used by the current build.
             
+            obj.validatePX4Root(obj.PX4Root);
             msgDir = fullfile(obj.PX4Root, 'msg');
-            if ~exist(msgDir, 'dir')
-                error('[px4API:Error] Missing PX4 msg directory at: %s', msgDir);
-            end
 
             % Discover all .msg files and exclude legacy backups
             rawMsgFiles = dir(fullfile(msgDir, '**', '*.msg'));
@@ -1019,9 +1019,7 @@ classdef px4API < handle
             if isempty(obj.AllowedExtensions)
                 return; 
             end
-            if ~exist(obj.PX4Root, 'dir')
-                error('[px4API:Error] Missing PX4 Root'); 
-            end
+            obj.validatePX4Root(obj.PX4Root);
             obj.ResolvedExternalDir = fullfile(obj.resolveAbsolutePath(obj.PX4Root), 'src', 'modules', obj.PX4ModuleName, 'generated_code');
             parent = fileparts(obj.ResolvedExternalDir);
             if ~isfolder(parent), error('px4io:MissingModule', 'Module directory does not exist: %s', parent); end
@@ -1259,6 +1257,14 @@ classdef px4API < handle
         end
     end
 
+    % MATLAB requires property accessors in a block without attributes.
+    methods
+        function set.PX4Root(obj, value)
+            % Reject invalid assignments without changing the previous root.
+            obj.PX4Root = obj.validatePX4Root(value);
+        end
+    end
+
     methods (Hidden)
         function registerParamBinding(obj, blockHandle, direction)
             % REGISTERPARAMBINDING - Cheap editor-time registration for one block.
@@ -1373,12 +1379,54 @@ classdef px4API < handle
 
     methods (Static, Access = private)
         function resolvedPath = resolveAbsolutePath(pathStr)
-            % RESOLVEABSOLUTEPATH - Normalizes paths (handles ~, ./, and ../).
-            resolvedPath = pathStr;
-            if startsWith(resolvedPath, '~/') || strcmp(resolvedPath, '~')
-                resolvedPath = fullfile(getenv('HOME'), resolvedPath(2:end));
-            elseif startsWith(resolvedPath, './') || startsWith(resolvedPath, '../')
-                resolvedPath = char(java.io.File(resolvedPath).getCanonicalPath());
+            % Expand either separator after ~, including Windows' ~\ form.
+            resolvedPath = char(pathStr);
+            if ~isempty(regexp(resolvedPath, '^~([\\/]|$)', 'once'))
+                if ispc
+                    homeDirectory = getenv('USERPROFILE');
+                else
+                    homeDirectory = getenv('HOME');
+                end
+                if isempty(homeDirectory)
+                    homeDirectory = char(java.lang.System.getProperty('user.home'));
+                end
+                suffix = regexprep(resolvedPath(2:end), '^[\\/]+', '');
+                suffix = strrep(strrep(suffix, '\', filesep), '/', filesep);
+                resolvedPath = fullfile(homeDirectory, suffix);
+            end
+            % Resolve existing relative paths against MATLAB's current folder,
+            % which can differ from the JVM's startup working directory.
+            if isfolder(resolvedPath)
+                [found, attributes] = fileattrib(resolvedPath);
+                if found && isscalar(attributes)
+                    resolvedPath = attributes.Name;
+                end
+            end
+            resolvedPath = char(java.io.File(resolvedPath).getCanonicalPath());
+        end
+
+        function root = validatePX4Root(value)
+            % Only message definitions are needed for API generation. Do not
+            % require .git or a complete source tree on the MATLAB computer.
+            if ~(ischar(value) && isrow(value) || isstring(value) && isscalar(value)) || ...
+                    isempty(strtrim(char(value)))
+                error('px4io:InvalidPX4Root', 'PX4Root must be a nonempty folder path containing msg/*.msg.');
+            end
+            try
+                root = px4io.px4API.resolveAbsolutePath(value);
+            catch cause
+                error('px4io:InvalidPX4Root', 'Cannot resolve PX4Root "%s": %s', char(value), cause.message);
+            end
+            if ~isfolder(root) || ~isfolder(fullfile(root, 'msg'))
+                error('px4io:InvalidPX4Root', ...
+                    'Invalid PX4Root: %s. Select the PX4 root folder containing the msg directory, not msg itself. Set PX4Root in px4io.px4API to a path accessible from this MATLAB session.', root);
+            end
+            messages = dir(fullfile(root, 'msg', '**', '*.msg'));
+            messages = messages(~[messages.isdir]);
+            messages(contains({messages.folder}, [filesep 'px4_msgs_old'])) = [];
+            if isempty(messages)
+                error('px4io:InvalidPX4Root', ...
+                    'Invalid PX4Root: %s. Its msg directory contains no supported .msg files.', root);
             end
         end
 
@@ -1644,6 +1692,11 @@ classdef px4API < handle
                 sharedApi = px4io.px4API();
             end
             api = sharedApi;
+            % Projects/path resets can remove the constructor's runtime entry
+            % while the singleton survives. Keep file discovery self-contained.
+            if ~contains([pathsep path() pathsep], [pathsep api.LocalGeneratedDir pathsep], 'IgnoreCase', ispc)
+                addpath(api.LocalGeneratedDir);
+            end
             api.ensureBusesInWorkspace();
         end
 

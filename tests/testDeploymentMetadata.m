@@ -17,6 +17,34 @@ root = fileparts(fileparts(mfilename('fullpath')));
 testCase.applyFixture(matlab.unittest.fixtures.PathFixture(root));
 end
 
+function testInvalidPX4RootDoesNotReplaceWorkingConfiguration(testCase)
+% A bad path must fail before it can invalidate caches or affect a build.
+api = px4io.px4API.getInstance();
+original = api.PX4Root;
+folder = tempname;
+mkdir(folder);
+cleanupFolder = onCleanup(@() rmdir(folder, 's'));
+verifyError(testCase, @() assignRoot(api, fullfile(folder, 'missing')), 'px4io:InvalidPX4Root');
+verifyError(testCase, @() assignRoot(api, folder), 'px4io:InvalidPX4Root');
+mkdir(fullfile(folder, 'msg'));
+verifyError(testCase, @() assignRoot(api, folder), 'px4io:InvalidPX4Root');
+verifyError(testCase, @() assignRoot(api, fullfile(original, 'msg')), 'px4io:InvalidPX4Root');
+verifyEqual(testCase, api.PX4Root, original);
+% Dot components should normalize to the same root, not a new relative path.
+api.PX4Root = fullfile(original, '.');
+verifyEqual(testCase, api.PX4Root, original);
+previousDirectory = pwd;
+cleanupDirectory = onCleanup(@() cd(previousDirectory));
+cd(original);
+api.PX4Root = '.';
+verifyEqual(testCase, api.PX4Root, original);
+end
+
+function assignRoot(api, value)
+% MATLAB anonymous functions cannot contain a property assignment.
+api.PX4Root = value;
+end
+
 function testPostCodeGenReadsMetadataAndWritesFiveMillisecondWrapper(testCase)
 % A simple passthrough model isolates the metadata API from PX4 messages,
 % parameter bindings, and library masks. Its 5 ms period is easy to verify
@@ -44,7 +72,22 @@ add_line(model, 'Input/1', 'Output/1');
 set_param(model, 'Solver', 'FixedStepDiscrete', 'FixedStep', '0.005', ...
     'CustomHeaderCode', '#include <math.h>', ...
     'PostCodeGenCommand', 'disp(''custom callback preserved'');');
+% Include directories belong to the user. Empty settings must stay empty;
+% toolbox files are found through the API's existing MATLAB path setup.
 px4io.deployment.configureModel(model);
+verifyEmpty(testCase, get_param(model, 'SimUserIncludeDirs'));
+verifyEmpty(testCase, get_param(model, 'CustomInclude'));
+% A user-supplied include directory (including spaces) must also be untouched.
+userInclude = fullfile(pwd, 'user includes');
+mkdir(userInclude);
+quotedUserInclude = ['"' userInclude '"'];
+set_param(model, 'SimUserIncludeDirs', quotedUserInclude, 'CustomInclude', quotedUserInclude);
+px4io.deployment.configureModel(model);
+expectedIncludes = quotedUserInclude;
+verifyEqual(testCase, get_param(model, 'SimUserIncludeDirs'), expectedIncludes);
+verifyEqual(testCase, get_param(model, 'CustomInclude'), expectedIncludes);
+verifyEqual(testCase, get_param(model, 'SimUserSources'), 'px4_simulink_api.c');
+verifyEmpty(testCase, get_param(model, 'CustomSource'));
 % Reapplying the helper must preserve timing and avoid duplicate callbacks
 % or custom-code entries when the user runs setup again.
 callbackBefore = get_param(model, 'PostCodeGenCommand');

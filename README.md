@@ -38,6 +38,15 @@ module directory. Defaults point to `~/PX4/v1.17.0-mod` and `simulink_io`.
 Install the matching module template in that PX4 checkout and enable it in the
 selected board configuration. Export requires the module directory to exist.
 
+`PX4Root` is normalized and validated before initialization and whenever it is
+assigned. It must contain a `msg` directory with at least one `.msg` file, not
+point at `msg` itself. Invalid assignments raise `px4io:InvalidPX4Root` and leave
+the previous root unchanged. Message-only/shared-folder copies are sufficient for
+API generation; export separately requires the configured PX4 module directory.
+Both `~/...` and `~\...` expand to the current user's home directory. If changing
+the root on an existing API object, call `forceGenerateAll` afterward to refresh
+its message definitions.
+
 The block callbacks initialize the API through `px4io.px4API.getInstance()`.
 API initialization checks generated artifacts against message and generator
 modification times, generates missing or outdated artifacts, and restores bus
@@ -76,7 +85,7 @@ changed model before building.
 | Build ownership | Generate code only; no makefile, example main, MAT-file logging, or allocation entry point |
 | Lifecycle and numerics | Initialize internal/external memory on each start, include termination, retain nonfinite-number support |
 | Memory | Disable MATLAB Function dynamic allocation; inline ordinary parameters; enable block reduction, expression folding, signal/buffer reuse, local block outputs, and memcpy |
-| Custom code | Add generated header/include paths for simulation and code generation; add desktop stubs only to simulation |
+| Custom code | Register generated files on MATLAB's search path; include the API header; add desktop stubs only to simulation |
 | Export | Install `px4io.px4API.runPostCodeGen(buildInfo)` on the top model |
 
 The helper preserves an existing fixed-step solver algorithm and sample period,
@@ -93,7 +102,11 @@ own reviewed hardware configuration. The helper does not force unspecified data
 types to `single` or change floating-point approximations to gain speed.
 
 Custom-code entries and the export callback are added only when absent, so the
-helper can be reapplied. Referenced models receive the shared target, hardware,
+helper can be reapplied. The helper leaves `SimUserIncludeDirs` and `CustomInclude`
+unchanged; the API already registers its generated folder on MATLAB's search path
+at runtime. If an earlier configuration saved absolute `+px4io/generated_code`
+include entries, remove those once in both configuration panes and save the model.
+Referenced models receive the shared target, hardware,
 optimization, initialization, and custom-code settings; their function packaging
 and callbacks remain their own. Only the top model gets the PX4 entry-point
 interface and deployment callback.

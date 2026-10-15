@@ -53,7 +53,6 @@ classdef deployment
             px4io.px4API.getInstance();
             load_system(model);
             model = get_param(model, 'Name');
-            apiDirectory = fullfile(fileparts(mfilename('fullpath')), 'generated_code');
             models = find_mdlrefs(model, 'KeepModelsLoaded', true);
             for i = 1:numel(models)
                 current = models{i};
@@ -89,8 +88,8 @@ classdef deployment
                     'RTWUseSimCustomCode', 'off', 'RTWUseLocalCustomCode', 'on');
                 px4io.deployment.appendSetting(current, 'SimCustomHeaderCode', '#include "px4_simulink_api.h"');
                 px4io.deployment.appendSetting(current, 'CustomHeaderCode', '#include "px4_simulink_api.h"');
-                px4io.deployment.appendSetting(current, 'SimUserIncludeDirs', ['"' apiDirectory '"']);
-                px4io.deployment.appendSetting(current, 'CustomInclude', ['"' apiDirectory '"']);
+                % API initialization already registers its generated files on
+                % MATLAB's path. Leave the model's include directories alone.
                 px4io.deployment.appendSetting(current, 'SimUserSources', 'px4_simulink_api.c');
             end
             % Referenced models retain their own function packaging; only the

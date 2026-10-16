@@ -1384,25 +1384,43 @@ classdef px4API < handle
             if ~isempty(regexp(resolvedPath, '^~([\\/]|$)', 'once'))
                 if ispc
                     homeDirectory = getenv('USERPROFILE');
+                    if isempty(homeDirectory)
+                        homeDrive = getenv('HOMEDRIVE');
+                        homePath = getenv('HOMEPATH');
+                        if ~isempty(homeDrive) && ~isempty(homePath)
+                            homeDirectory = fullfile(homeDrive, homePath);
+                        else
+                            homeDirectory = getenv('HOME');
+                        end
+                    end
                 else
                     homeDirectory = getenv('HOME');
                 end
                 if isempty(homeDirectory)
-                    homeDirectory = char(java.lang.System.getProperty('user.home'));
+                    error('px4io:InvalidPX4Root', ...
+                        'Cannot expand ~: the home-directory environment variables are unset. Set PX4Root to an absolute folder path.');
                 end
-                suffix = regexprep(resolvedPath(2:end), '^[\\/]+', '');
-                suffix = strrep(strrep(suffix, '\', filesep), '/', filesep);
-                resolvedPath = fullfile(homeDirectory, suffix);
+                % Recognize either separator in the input, then let fullfile
+                % assemble the directory using this platform's conventions.
+                parts = regexp(resolvedPath, '[\\/]+', 'split');
+                resolvedPath = fullfile(homeDirectory, parts{2:end});
             end
-            % Resolve existing relative paths against MATLAB's current folder,
-            % which can differ from the JVM's startup working directory.
-            if isfolder(resolvedPath)
-                [found, attributes] = fileattrib(resolvedPath);
-                if found && isscalar(attributes)
-                    resolvedPath = attributes.Name;
-                end
+            % Use MATLAB's filesystem APIs for relative, mapped-drive, and UNC
+            % paths without additional runtime dependencies.
+            if isfile(resolvedPath)
+                error('px4io:InvalidPX4Root', ...
+                    'PX4Root points to a file, not a directory: "%s". Select the PX4 root directory containing msg.', resolvedPath);
             end
-            resolvedPath = char(java.io.File(resolvedPath).getCanonicalPath());
+            if ~isfolder(resolvedPath)
+                error('px4io:InvalidPX4Root', ...
+                    'PX4Root directory does not exist or is inaccessible: "%s". Check the path spelling and that any mapped drive or network share is connected.', resolvedPath);
+            end
+            [found, attributes] = fileattrib(resolvedPath);
+            if ~found || ~isscalar(attributes) || ~attributes.directory
+                error('px4io:InvalidPX4Root', ...
+                    'Cannot inspect PX4Root directory: "%s". Check directory permissions and the drive or network-share connection.', resolvedPath);
+            end
+            resolvedPath = attributes.Name;
         end
 
         function root = validatePX4Root(value)
@@ -1410,23 +1428,28 @@ classdef px4API < handle
             % require .git or a complete source tree on the MATLAB computer.
             if ~(ischar(value) && isrow(value) || isstring(value) && isscalar(value)) || ...
                     isempty(strtrim(char(value)))
-                error('px4io:InvalidPX4Root', 'PX4Root must be a nonempty folder path containing msg/*.msg.');
+                error('px4io:InvalidPX4Root', ...
+                    'PX4Root must be a nonempty character vector or string scalar naming the PX4 root directory containing msg.');
             end
             try
                 root = px4io.px4API.resolveAbsolutePath(value);
             catch cause
-                error('px4io:InvalidPX4Root', 'Cannot resolve PX4Root "%s": %s', char(value), cause.message);
+                if strcmp(cause.identifier, 'px4io:InvalidPX4Root')
+                    rethrow(cause);
+                end
+                error('px4io:InvalidPX4Root', 'Cannot read PX4Root path "%s": %s', char(value), cause.message);
             end
-            if ~isfolder(root) || ~isfolder(fullfile(root, 'msg'))
+            messageDirectory = fullfile(root, 'msg');
+            if ~isfolder(messageDirectory)
                 error('px4io:InvalidPX4Root', ...
-                    'Invalid PX4Root: %s. Select the PX4 root folder containing the msg directory, not msg itself. Set PX4Root in px4io.px4API to a path accessible from this MATLAB session.', root);
+                    'Required message directory is missing or inaccessible: "%s". Set PX4Root to the PX4 root directory, not to msg itself.', messageDirectory);
             end
-            messages = dir(fullfile(root, 'msg', '**', '*.msg'));
+            messages = dir(fullfile(messageDirectory, '**', '*.msg'));
             messages = messages(~[messages.isdir]);
             messages(contains({messages.folder}, [filesep 'px4_msgs_old'])) = [];
             if isempty(messages)
                 error('px4io:InvalidPX4Root', ...
-                    'Invalid PX4Root: %s. Its msg directory contains no supported .msg files.', root);
+                    'No supported .msg files found in "%s" or its subdirectories. Check that PX4 message definitions are present.', messageDirectory);
             end
         end
 

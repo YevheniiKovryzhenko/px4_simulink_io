@@ -24,6 +24,12 @@ original = api.PX4Root;
 folder = tempname;
 mkdir(folder);
 cleanupFolder = onCleanup(@() rmdir(folder, 's'));
+verifyError(testCase, @() assignRoot(api, ''), 'px4io:InvalidPX4Root');
+verifyError(testCase, @() assignRoot(api, 42), 'px4io:InvalidPX4Root');
+filePath = fullfile(folder, 'not-a-directory.txt');
+fid = fopen(filePath, 'w');
+fclose(fid);
+verifyError(testCase, @() assignRoot(api, filePath), 'px4io:InvalidPX4Root');
 verifyError(testCase, @() assignRoot(api, fullfile(folder, 'missing')), 'px4io:InvalidPX4Root');
 verifyError(testCase, @() assignRoot(api, folder), 'px4io:InvalidPX4Root');
 mkdir(fullfile(folder, 'msg'));
@@ -37,6 +43,18 @@ previousDirectory = pwd;
 cleanupDirectory = onCleanup(@() cd(previousDirectory));
 cd(original);
 api.PX4Root = '.';
+verifyEqual(testCase, api.PX4Root, original);
+% Exercise home expansion with both user-input separator styles. Temporarily
+% point the home variable at the real root's parent, then restore it on exit.
+homeVariable = 'HOME';
+if ispc, homeVariable = 'USERPROFILE'; end
+previousHome = getenv(homeVariable);
+cleanupHome = onCleanup(@() setenv(homeVariable, previousHome));
+[parent, name, extension] = fileparts(original);
+setenv(homeVariable, parent);
+api.PX4Root = fullfile('~', [name extension]);
+verifyEqual(testCase, api.PX4Root, original);
+api.PX4Root = ['~\' name extension];
 verifyEqual(testCase, api.PX4Root, original);
 end
 

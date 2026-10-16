@@ -45,7 +45,9 @@ the previous root unchanged. Message-only/shared-folder copies are sufficient fo
 API generation; export separately requires the configured PX4 module directory.
 Both `~/...` and `~\...` expand to the current user's home directory. If changing
 the root on an existing API object, call `forceGenerateAll` afterward to refresh
-its message definitions.
+its message definitions. Path validation uses MATLAB-native filesystem APIs.
+Mapped drives and UNC paths must be accessible to
+the MATLAB session under its current user account.
 
 The block callbacks initialize the API through `px4io.px4API.getInstance()`.
 API initialization checks generated artifacts against message and generator

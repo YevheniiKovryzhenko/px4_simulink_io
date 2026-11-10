@@ -208,6 +208,7 @@ set(msg_files
 	SensorsStatus.msg
 	SensorsStatusImu.msg
 	SensorUwb.msg
+	Sf45Sample.msg
 	SensorAirflow.msg
 	SimControlStatus.msg
 	SimGuidanceRequest.msg

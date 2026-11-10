@@ -1,0 +1,58 @@
+module_name: LightWare SF45 DroneCAN
+parameters:
+  - group: Sensors
+    definitions:
+      SF45C_ENABLE:
+        description:
+          short: Enable SF45 DroneCAN receiver
+          long: Requires the paired AP_Periph raw SF45 publication, matching node/sensor IDs, and UAVCAN enabled. Reboot after changing.
+        type: boolean
+        default: 1
+        reboot_required: true
+      SF45C_NODE:
+        description:
+          short: SF45 DroneCAN source node ID
+          long: Source node ID to accept. Set explicitly if the AP_Periph node uses an ID other than the default 42.
+        type: int32
+        min: 0
+        max: 125
+        default: 42
+        reboot_required: true
+      SF45C_SENSOR:
+        description:
+          short: SF45 sensor ID on the source node
+        type: int32
+        min: 0
+        max: 255
+        default: 0
+        reboot_required: true
+      SF45C_TIMEOUT:
+        description:
+          short: SF45 CAN observation timeout
+          long: Age in milliseconds after which a bin becomes unknown. Larger values retain older observations longer.
+        type: int32
+        unit: ms
+        min: 20
+        max: 5000
+        default: 100
+        reboot_required: true
+      SF45C_ORIENT:
+        description:
+          short: SF45 CAN mounting orientation
+        type: enum
+        values:
+          24: Upright
+          25: Downward
+        default: 24
+        reboot_required: true
+      SF45C_YAW:
+        description:
+          short: SF45 CAN mounting yaw
+        type: enum
+        values:
+          0: Forward
+          2: Right
+          4: Backward
+          6: Left
+        default: 0
+        reboot_required: true

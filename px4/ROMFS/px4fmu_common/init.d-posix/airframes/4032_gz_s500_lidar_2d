@@ -1,0 +1,10 @@
+#!/bin/sh
+#
+# @name Gazebo s500 lidar 2d
+#
+# @type Quadrotor
+#
+
+PX4_SIM_MODEL=${PX4_SIM_MODEL:=s500_lidar_2d}
+
+. ${R}etc/init.d-posix/airframes/4030_gz_s500

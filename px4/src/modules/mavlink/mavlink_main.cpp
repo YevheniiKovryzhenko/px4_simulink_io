@@ -1656,7 +1656,7 @@ Mavlink::configure_streams_to_default(const char *configure_single_stream)
 		configure_stream_local("ESC_INFO", 10.0f);
 		configure_stream_local("ESC_STATUS", 10.0f);
 		configure_stream_local("MOUNT_ORIENTATION", 10.0f);
-		configure_stream_local("OBSTACLE_DISTANCE", 10.0f);
+		configure_stream_local("OBSTACLE_DISTANCE", 30.0f);
 		configure_stream_local("ODOMETRY", 30.0f);
 
 		configure_stream_local("ADSB_VEHICLE", unlimited_rate);
@@ -1818,6 +1818,7 @@ Mavlink::configure_streams_to_default(const char *configure_single_stream)
 		configure_stream_local("LOCAL_POSITION_NED", 30.0f);
 		configure_stream_local("DISTANCE_SENSOR", 10.0f);
 		configure_stream_local("MOUNT_ORIENTATION", 10.0f);
+		configure_stream_local("OBSTACLE_DISTANCE", 30.0f);
 		configure_stream_local("ODOMETRY", 30.0f);
 		add_simulink_topics(configure_stream_local);
 		configure_stream_local("ADSB_VEHICLE", unlimited_rate);

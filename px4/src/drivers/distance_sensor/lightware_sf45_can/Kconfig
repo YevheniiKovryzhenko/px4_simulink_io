@@ -1,0 +1,6 @@
+menuconfig DRIVERS_DISTANCE_SENSOR_LIGHTWARE_SF45_CAN
+    bool "lightware_sf45_can"
+    depends on DRIVERS_UAVCAN
+    default n
+    help
+        Standalone SF45 obstacle-map module fed by the existing DroneCAN stack.

@@ -2828,7 +2828,49 @@ MavlinkReceiver::handle_message_debug_float_array(mavlink_message_t *msg)
 		debug_topic.data[i] = debug_msg.data[i];
 	}
 
+	// Preserve the generic stream for existing subscribers.
 	_debug_array_pub.publish(debug_topic);
+
+	switch (debug_topic.id) {
+	case debug_array_s::SIMULINK_INBOUND_ID:
+		_simulink_inbound_pub.publish(debug_topic);
+		break;
+
+	case debug_array_s::SIMULINK_OUTBOUND_ID:
+		_simulink_outbound_pub.publish(debug_topic);
+		break;
+
+	case debug_array_s::SIMULINK_OUTBOUND_1_ID:
+		_simulink_outbound_1_pub.publish(debug_topic);
+		break;
+
+	case debug_array_s::SIMULINK_OUTBOUND_2_ID:
+		_simulink_outbound_2_pub.publish(debug_topic);
+		break;
+
+	case debug_array_s::SIMULINK_OUTBOUND_3_ID:
+		_simulink_outbound_3_pub.publish(debug_topic);
+		break;
+
+	case debug_array_s::SIMULINK_INBOUND_CTRL_ID:
+		_simulink_inbound_ctrl_pub.publish(debug_topic);
+		break;
+
+	case debug_array_s::SIMULINK_GUIDANCE_ID:
+		_simulink_guidance_pub.publish(debug_topic);
+		break;
+
+	case debug_array_s::COMPANION_GUIDANCE_INBOUND_ID:
+		_companion_guidance_inbound_pub.publish(debug_topic);
+		break;
+
+	case debug_array_s::COMPANION_GUIDANCE_OUTBOUND_ID:
+		_companion_guidance_outbound_pub.publish(debug_topic);
+		break;
+
+	default:
+		break;
+	}
 }
 #endif // !CONSTRAINED_FLASH
 

@@ -83,7 +83,7 @@ parameters:
           sensor comparison (low rate raw IMU, Baro and magnetometer data) 7 : Topics
           for computer vision and collision prevention 8 : Raw FIFO high-rate IMU
           (Gyro) 9 : Raw FIFO high-rate IMU (Accel) 10: Logging of mavlink tunnel
-          message (useful for payload communication debugging) 11: Logging of Simulink
+          message (useful for payload communication debugging) 11: High rate sensors 12: Logging of Simulink
           and guidance-related topics'
       type: bitmask
       bit:
@@ -144,6 +144,7 @@ parameters:
                 7: simulink_guidance
                 8: sim_guidance_trajectory
             default: 511
+            reboot_required: true
 
     SM_INBD_LOG_T:
             description:

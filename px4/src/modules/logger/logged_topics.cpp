@@ -420,7 +420,7 @@ void LoggedTopics::add_sim_topics()
 	}
 
 	// 3: companion_guidance_inbound
-	if (sm_log_mask & (1 << 4))
+	if (sm_log_mask & (1 << 3))
 	{
 		static param_t h = param_find("SMG_IN_LOG_T");
 		int32_t sm_log_delay_ms = 0;
@@ -429,7 +429,7 @@ void LoggedTopics::add_sim_topics()
 	}
 
 	// 4: companion_guidance_outbound
-	if (sm_log_mask & (1 << 3))
+	if (sm_log_mask & (1 << 4))
 	{
 		static param_t h = param_find("SMG_OUT_LOG_T");
 		int32_t sm_log_delay_ms = 0;

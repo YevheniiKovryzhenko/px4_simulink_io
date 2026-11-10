@@ -361,6 +361,11 @@ CONFIG:
       buildType: MinSizeRel
       settings:
         CONFIG: cubepilot_cubeorangeplus_default
+    cubepilot_cubeorangeplus_surgeon:
+      short: cubepilot_cubeorangeplus_surgeon
+      buildType: MinSizeRel
+      settings:
+        CONFIG: cubepilot_cubeorangeplus_surgeon
     cubepilot_cubeorangeplus_simulink:
       short: cubepilot_cubeorangeplus_simulink
       buildType: MinSizeRel
